@@ -1,6 +1,7 @@
 # Owl Audio Gen Experiments
 
 **Setup**  
+
 ```
 git submodule init
 git submodule update
@@ -9,7 +10,8 @@ git switch waypoint_1_prep
 pip install -r requirements.txt
 ```
 
-**Loading Audio VAE on cluster**
+**Loading Audio VAE on cluster**  
+
 ```python
 import sys
 sys.path.append("./owl-vaes")
@@ -20,3 +22,7 @@ ckpt_path = "/mnt/data/shahbuland/owl-vaes/checkpoints/waypoint_1_audio_basic/st
 
 vae = from_pretrained(cfg_path, ckpt_path)
 ```
+
+**Usage**  
+
+`torchrun --nproc_per_node=8 -m train --config_path configs/base.yml`
