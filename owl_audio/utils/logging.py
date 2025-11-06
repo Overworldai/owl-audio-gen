@@ -53,7 +53,7 @@ class LogHelper:
         return final
 
 def log_audio_to_wandb(
-    sample: Tensor,
+    sample: torch.Tensor,
     sample_rate: int = 44100,
     max_samples: int = 16,
 ) -> dict[str, wandb.Audio]:

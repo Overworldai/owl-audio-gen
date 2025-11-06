@@ -1,12 +1,17 @@
-import torch
-from torch import nn
-
 from .base import BaseTrainer
 from ..data import get_loader
 from ..models import get_model_cls
 from ..utils import freeze, unfreeze, Timer
 from ..utils.logging import LogHelper, log_audio_to_wandb
 from ..sampling import flow_sample
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import wandb
+from ema_pytorch import EMA
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
 
 import sys
 sys.path.append("./owl-vaes")
@@ -25,7 +30,7 @@ class AudioRFTTrainer(BaseTrainer):
         super().__init__(*args, **kwargs)
 
         model_id = self.model_cfg.model_id
-        self.model get_model_cls(model_id)(self.model_cfg).to(self.device)
+        self.model = get_model_cls(model_id)(self.model_cfg).train().to(self.device)
         self.vae = load_autoencoder().to(self.device)
         
         if self.rank == 0:

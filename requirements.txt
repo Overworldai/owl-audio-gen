@@ -1,0 +1,30 @@
+numpy==1.26.4
+wandb
+einops
+rotary-embedding-torch>=0.8.8
+ema-pytorch
+omegaconf
+accelerate
+boto3
+python-dotenv
+wandb[media]
+moviepy==1.0.3
+fvcore
+nvidia-ml-py
+vector-quantize-pytorch==1.22.17
+torchmetrics
+ray
+datasets
+huggingface-hub
+alias-free-torch
+wandb[media]
+torchtyping
+git+https://github.com/KellerJordan/Muon
+
+# WorldModel deps
+# tensordict
+# transformers
+# ftfy
+
+# wandb_workspaces
+av

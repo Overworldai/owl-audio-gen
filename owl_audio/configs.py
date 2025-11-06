@@ -7,7 +7,7 @@ from omegaconf import OmegaConf
 OmegaConf.register_new_resolver("env", lambda k: os.environ.get(k))
 
 @dataclass
-class TransformerConfig(VAEConfig):
+class TransformerConfig():
     n_layers : int = 12
     n_heads : int = 12
     d_model : int = 384
@@ -64,7 +64,7 @@ class WANDBConfig:
 
 @dataclass
 class Config:
-    model: VAEConfig
+    model: TransformerConfig
     train: TrainingConfig
     wandb: WANDBConfig
 
