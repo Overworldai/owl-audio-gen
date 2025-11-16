@@ -62,6 +62,7 @@ class AudioRFTTrainer(BaseTrainer):
 
         save_dict = super().load(self.train_cfg.resume_ckpt)
         self.model.load_state_dict(save_dict["model"])
+
         self.ema.load_state_dict(save_dict["ema"])
         self.opt.load_state_dict(save_dict["opt"])
         self.scaler.load_state_dict(save_dict["scaler"])
@@ -76,6 +77,7 @@ class AudioRFTTrainer(BaseTrainer):
 
         if self.world_size > 1:
             self.model = DDP(self.model)
+        self.model = torch.compile(self.model)
 
         # EMA, compile, optimizer
         self.ema = EMA(self.model, beta=0.9999, update_after_step=0, update_every=1)
