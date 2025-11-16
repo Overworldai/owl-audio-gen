@@ -53,7 +53,7 @@ class LogHelper:
         return final
 
 def log_audio_to_wandb(
-    sample: Tensor,
+    sample: torch.Tensor,
     sample_rate: int = 44100,
     max_samples: int = 16,
 ) -> dict[str, wandb.Audio]:
@@ -75,7 +75,7 @@ def log_audio_to_wandb(
     for i in range(batch_size):
         # Convert to numpy and ensure correct shape for wandb
         # (B, N, D) -> (N, D)
-        audio = sample[i].detach().cpu().numpy()  # (N, D)
+        audio = sample[i].detach().cpu().float().numpy()  # (N, D)
 
         # For stereo audio, mix down to mono for logging
         if audio.shape[-1] == 2:

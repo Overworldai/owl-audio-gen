@@ -1,4 +1,6 @@
 import torch
+import torch.nn as nn
+import time 
 
 def freeze(module : nn.Module):
     for param in module.parameters():

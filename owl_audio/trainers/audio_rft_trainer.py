@@ -1,12 +1,18 @@
-import torch
-from torch import nn
-
 from .base import BaseTrainer
 from ..data import get_loader
 from ..models import get_model_cls
 from ..utils import freeze, unfreeze, Timer
 from ..utils.logging import LogHelper, log_audio_to_wandb
 from ..sampling import flow_sample
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import wandb
+import tqdm
+from ema_pytorch import EMA
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
 
 import sys
 sys.path.append("./owl-vaes")
@@ -25,7 +31,7 @@ class AudioRFTTrainer(BaseTrainer):
         super().__init__(*args, **kwargs)
 
         model_id = self.model_cfg.model_id
-        self.model get_model_cls(model_id)(self.model_cfg).to(self.device)
+        self.model = get_model_cls(model_id)(self.model_cfg).train().to(self.device)
         self.vae = load_autoencoder().to(self.device)
         
         if self.rank == 0:
@@ -56,6 +62,7 @@ class AudioRFTTrainer(BaseTrainer):
 
         save_dict = super().load(self.train_cfg.resume_ckpt)
         self.model.load_state_dict(save_dict["model"])
+
         self.ema.load_state_dict(save_dict["ema"])
         self.opt.load_state_dict(save_dict["opt"])
         self.scaler.load_state_dict(save_dict["scaler"])
@@ -70,6 +77,7 @@ class AudioRFTTrainer(BaseTrainer):
 
         if self.world_size > 1:
             self.model = DDP(self.model)
+        self.model = torch.compile(self.model)
 
         # EMA, compile, optimizer
         self.ema = EMA(self.model, beta=0.9999, update_after_step=0, update_every=1)
@@ -105,10 +113,9 @@ class AudioRFTTrainer(BaseTrainer):
             return z / self.train_cfg.ldm_scale
 
         for epoch_idx in range(self.train_cfg.epochs):
-            for batch in self.data_loader:
+            for batch in tqdm.tqdm(self.data_loader, disable=self.rank != 0, desc=f"Epoch: {epoch_idx}"):
                 batch = batch.to(device = self.device, dtype = torch.bfloat16)
                 batch = vae_sample(batch) # latents
-
                 with ctx:
                     loss = self.model(batch)
                 
