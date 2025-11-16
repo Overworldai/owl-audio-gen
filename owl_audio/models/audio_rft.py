@@ -4,10 +4,11 @@ import torch.nn.functional as F
 
 from .. import nn as owl_nn
 from ..nn.embeddings import TimestepEmbedding
-from ..nn.attn import DiT
+from ..nn.attn import DiT, AdaLN
 import einops as eo
 from einops._torch_specific import allow_ops_in_compiled_graph
 allow_ops_in_compiled_graph()
+
 class AudioRFTCore(nn.Module):
     def __init__(self, cfg):
         super().__init__()
@@ -17,21 +18,26 @@ class AudioRFTCore(nn.Module):
         self.transformer = DiT(cfg)
 
         self.proj_in = nn.Linear(cfg.sample_size, cfg.d_model, bias=False)
-        self.proj_out = nn.Linear(cfg.d_model, cfg.sample_size, bias=False)
+        
+        self.adaln = AdaLN(cfg.d_model)
+        self.final_proj = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(cfg.d_model, cfg.sample_size)
+        )
 
         self.t_embed = TimestepEmbedding(cfg.d_model)
         self.uncond = cfg.uncond
+        
     def forward(self, x, ts):
         B, N, D = x.shape
         
         x_tokens = self.proj_in(x)
         cond = self.t_embed(ts)
-        # print(f"ts shape: {ts.shape}")
-        # print(f"cond shape: {cond.shape}, x shape: {x.shape}")
+        
         x = self.transformer(x_tokens, cond)
-        x = F.silu(x)
-        x = self.proj_out(x)
-        return x 
+        x = self.adaln(x, cond)
+        x = self.final_proj(x)
+        return x
 
 class AudioRFT(nn.Module):
     def __init__(self, cfg):

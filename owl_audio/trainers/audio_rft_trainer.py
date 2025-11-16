@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import wandb
+import tqdm
 from ema_pytorch import EMA
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
@@ -110,10 +111,9 @@ class AudioRFTTrainer(BaseTrainer):
             return z / self.train_cfg.ldm_scale
 
         for epoch_idx in range(self.train_cfg.epochs):
-            for batch in self.data_loader:
+            for batch in tqdm.tqdm(self.data_loader, disable=self.rank != 0, desc=f"Epoch: {epoch_idx}"):
                 batch = batch.to(device = self.device, dtype = torch.bfloat16)
                 batch = vae_sample(batch) # latents
-
                 with ctx:
                     loss = self.model(batch)
                 
