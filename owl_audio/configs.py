@@ -4,33 +4,38 @@ from dataclasses import dataclass
 import yaml
 from omegaconf import OmegaConf
 
+from typing import Tuple, Optional
+
 OmegaConf.register_new_resolver("env", lambda k: os.environ.get(k))
 
 @dataclass
-class TransformerConfig(VAEConfig):
-    n_layers : int = 12
-    n_heads : int = 12
-    d_model : int = 384
+class ModelConfig:
+    n_layers: int
+    n_heads: int
+    d_model: int
+    d_text: int
 
-    patch_size : int = 1
-    causal: bool = True
+    channels: int
+    patch_size: Tuple[int, int]
+    sample_size: Tuple[int, int]
+    
+    x0_mode: bool
+    kernel_size: Optional[Tuple[int, int]] = None
+    mlp_ratio: int = 4
 
 @dataclass
 class TrainingConfig:
     trainer_id : str = None
     data_id : str = None
-    filepath : str = None  # For audio data path
+    data_kwargs : dict = None
 
-    target_batch_size : int = 128
-    batch_size : int = 2
+    target_batch_size : int = 256
+    batch_size : int = 32
 
     epochs : int = 200
 
     opt : str = "AdamW"
     opt_kwargs : dict = None
-    d_opt_kwargs : dict = None # Only for GAN
-
-    loss_weights : dict = None
 
     scheduler : str = None
     scheduler_kwargs : dict = None
@@ -44,17 +49,11 @@ class TrainingConfig:
 
     sample_interval : int = 1000
     save_interval : int = 1000
-
-    # Adversarial realted
-    delay_adv: int = 20000
-    warmup_adv:int = 5000
-
-    # Causal regularization
-    warmup_crt:int = 1000
-
-    # For distillation, if you want to renormalize latents, scale by this amount before decode
-    latent_scale:float = 1.0
-    lpips_id: str = "convnext"
+    
+    sampler_id: str = "euler"
+    sampling_steps: int = 20
+    cfg_scale: float = 1.5
+    vae_id: Optional[str] = None
 
 @dataclass
 class WANDBConfig:
@@ -64,7 +63,7 @@ class WANDBConfig:
 
 @dataclass
 class Config:
-    model: VAEConfig
+    model: ModelConfig
     train: TrainingConfig
     wandb: WANDBConfig
 

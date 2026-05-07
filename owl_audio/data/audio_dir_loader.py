@@ -1,237 +1,164 @@
 import os, glob, random
 from pathlib import Path
-from fractions import Fraction
 import numpy as np
-import av
-import random
 
 import torch
 from torch.utils.data import IterableDataset, DataLoader, get_worker_info
-import torchvision.transforms.functional as TF
+import av
 
 
 class RandomAudioFromMP4s:
     """
-    Continuous iterator yielding random audio chunks (2, n_samples) from MP4s.
-    - Uniform over files; uniform over time within each file.
-    - No persistent handles: each yield opens the chosen file once and closes it.
-    - Duration/sample_rate are computed lazily on first use and cached in memory.
-    - Ensures stereo output by converting mono to stereo or taking first 2 channels.
+    Continuous iterator yielding random audio windows as [C, T] float32 numpy arrays.
+    Uniform over files; uniform over time within each file.
+    Audio is resampled to target sample_rate and normalized to [-1, 1].
     """
-    def __init__(self, source, seed=None, target_sampling_rate=44100, target_window_length=88200):
-        # Ensure source is a list
+    def __init__(self, source, seed=None, window_length=2.0, sample_rate=16000):
         if isinstance(source, str):
             source = [source]
-        self.target_sampling_rate = target_sampling_rate
-        self.target_window_length = target_window_length  # number of samples
-        # 1. Collect all .mp4 files (can be glob, dir, list, …)
+        self.window_length = window_length          # seconds
+        self.sample_rate = sample_rate              # samples/sec
+        self.window_length_samples = int(window_length * sample_rate)
         self.paths = self._find_mp4s(source)
-
         if not self.paths:
-            raise RuntimeError("No videos found in the supplied source.")
+            raise RuntimeError("No MP4s found in the supplied source.")
         self.rng = random.Random(seed)
-        self.meta = {}  # path -> (duration_s, sample_rate)
+        self.meta = {}  # path -> duration_s
 
     @staticmethod
     def _find_mp4s(spec):
-        """Return sorted unique .mp4 Paths from globs/dirs/files (abs/rel OK)."""
         specs = [spec] if isinstance(spec, (str, Path)) else list(spec)
         out = []
         for s in specs:
             s = os.path.expanduser(str(s))
             p = Path(s)
+            registry_file = p / "valid_mp4s.txt"
+            if p.is_dir() and registry_file.exists():
+                print(f"[DataLoader] Found registry {registry_file}, using pre-filtered paths.")
+                with open(registry_file, 'r') as f:
+                    out.extend([line.strip() for line in f if line.strip()])
+                continue
             if p.exists() and p.is_dir():
                 out += glob.glob(str(p / "**/*.mp4"), recursive=True)
             elif p.exists() and p.is_file() and p.suffix.lower() == ".mp4":
                 out.append(str(p))
             else:
-                # treat as (possibly absolute) glob pattern
                 out += glob.glob(s, recursive=True)
-        return [Path(x) for x in sorted({x for x in out if x.lower().endswith(".mp4")})]
+        filtered = [x for x in out if x.lower().endswith(".mp4") and '_' not in Path(x).stem]
+        return [Path(x) for x in sorted(set(filtered))]
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        max_attempts = 10  # Try up to 10 different videos before giving up
-        for attempt in range(max_attempts):
+        while True:
+            if not self.paths:
+                raise RuntimeError("All videos in this worker failed to load audio.")
+
+            idx = self.rng.randrange(len(self.paths))
+            p = self.paths[idx]
             try:
-                p = self.paths[self.rng.randrange(len(self.paths))]
-                # If we already know (dur, sr), use it; otherwise compute inside the same open.
-                if p in self.meta:
-                    dur, sr = self.meta[p]
-                    # Calculate window duration in seconds
-                    window_dur = self.target_window_length / self.target_sampling_rate
-                    # Pick random start time ensuring we can get full window
-                    t = self.rng.random() * max(0.0, dur - window_dur)
-                    audio = self._decode_at_time(p, t, window_dur)
-                else:
-                    # First time for this file: open once, read metadata, pick t, decode, close.
+                if p not in self.meta:
                     with av.open(str(p)) as c:
                         a = next((s for s in c.streams if s.type == "audio"), None)
                         if a is None:
-                            raise RuntimeError(f"No audio stream found in {p}")
-
-                        sr = a.sample_rate if a.sample_rate else 44100
+                            self.paths.pop(idx)
+                            continue
                         dur = (c.duration / 1e6) if c.duration is not None else 600.0
-                        self.meta[p] = (float(dur), int(sr))
+                    self.meta[p] = float(dur)
 
-                        window_dur = self.target_window_length / self.target_sampling_rate
-                        t = self.rng.random() * max(0.0, dur - window_dur)
-                        audio = self._decode_from_open(c, a, t, window_dur)  # decode using this same open
+                dur = self.meta[p]
+                max_t = dur - self.window_length - 0.05
+                if max_t <= 0:
+                    self.paths.pop(idx)
+                    continue
 
-                return self._ensure_stereo_and_length(audio)
+                t = self.rng.random() * max_t
+                return self._decode_audio(str(p), t)
 
-            except Exception as e:
-                print(f"Error decoding audio from {p}: {e}. Trying another video...")
-                # Remove failed video from meta cache if it exists
-                if p in self.meta:
-                    del self.meta[p]
+            except Exception:
+                self.paths.pop(idx)
                 continue
 
-        raise RuntimeError(f"Failed to decode audio after {max_attempts} attempts")
+    def _decode_audio(self, path, t_sec):
+        resampler = av.AudioResampler(format="fltp", layout="stereo", rate=self.sample_rate)
+        chunks = []
+        needed = self.window_length_samples
 
-    @staticmethod
-    def _decode_from_open(
-            container: av.container.input.InputContainer,
-            astream: av.audio.stream.AudioStream,
-            t_sec: float,
-            window_dur: float
-    ) -> np.ndarray:
-        """Seek+decode within an already-open container; returns audio (channels, samples)."""
-        tb: Fraction = astream.time_base
+        with av.open(path) as container:
+            a_stream = next(s for s in container.streams if s.type == "audio")
+            tb = a_stream.time_base
+            seek_ts = int(max(0.0, t_sec) / float(tb))
+            container.seek(seek_ts, stream=a_stream, backward=True)
 
-        # Clamp t to known duration if available
-        if container.duration is not None:
-            max_t = max(0.0, container.duration / 1e6 - window_dur)
-            t_sec = min(max(0.0, t_sec), max_t)
+            started = False
+            done = False
+            for pkt in container.demux(a_stream):
+                for frame in pkt.decode():
+                    if not started:
+                        # skip frames that end before t_sec
+                        if frame.time is not None:
+                            frame_end = frame.time + frame.samples / max(1, frame.sample_rate)
+                            if frame_end + 1e-3 < t_sec:
+                                continue
+                        started = True
 
-        # Seek to the target time
-        container.seek(int(max(0.0, t_sec) / float(tb)), stream=astream, backward=True, any_frame=False)
+                    for rf in resampler.resample(frame):
+                        chunks.append(rf.to_ndarray())  # [C, samples] for fltp
 
-        # Collect audio frames
-        audio_frames = []
-        end_time = t_sec + window_dur
-
-        for pkt in container.demux(astream):
-            for frame in pkt.decode():
-                if frame.time is None or frame.time >= t_sec:
-                    # Convert to numpy array (channels, samples)
-                    audio_data = frame.to_ndarray()
-                    # PyAV returns (samples, channels) or (channels, samples) depending on layout
-                    # Ensure it's (channels, samples)
-                    if audio_data.ndim == 1:
-                        audio_data = audio_data.reshape(1, -1)
-                    elif audio_data.shape[0] > audio_data.shape[1]:
-                        audio_data = audio_data.T
-
-                    audio_frames.append(audio_data)
-
-                    if frame.time is not None and frame.time >= end_time:
+                    if sum(c.shape[1] for c in chunks) >= needed:
+                        done = True
                         break
-            if frame.time is not None and frame.time >= end_time:
-                break
+                if done:
+                    break
 
-        if not audio_frames:
-            raise RuntimeError("No audio frames decoded")
+            for rf in resampler.resample(None):  # flush
+                chunks.append(rf.to_ndarray())
 
-        # Concatenate all frames
-        audio = np.concatenate(audio_frames, axis=1)
-        return audio
+        if not chunks:
+            raise RuntimeError("No audio decoded")
 
-    def _ensure_stereo_and_length(self, audio: np.ndarray) -> np.ndarray:
-        """
-        Ensure audio is stereo (2 channels) and exactly target_window_length samples.
-        - If mono, duplicate to stereo
-        - If > 2 channels, take first 2
-        - If too long, crop
-        - If too short, pad with zeros
-        """
-        # Ensure stereo
-        if audio.shape[0] == 1:
-            # Mono -> Stereo: duplicate channel
-            audio = np.repeat(audio, 2, axis=0)
-        elif audio.shape[0] > 2:
-            # More than stereo: take first 2 channels
-            audio = audio[:2, :]
+        audio = np.concatenate(chunks, axis=1)  # [C, total_samples]
 
-        # Ensure correct length
-        current_length = audio.shape[1]
-        if current_length > self.target_window_length:
-            # Crop to target length
-            audio = audio[:, :self.target_window_length]
-        elif current_length < self.target_window_length:
-            # Pad with zeros
-            padding = self.target_window_length - current_length
-            audio = np.pad(audio, ((0, 0), (0, padding)), mode='constant')
+        if audio.shape[1] < needed:
+            pad = np.zeros((audio.shape[0], needed - audio.shape[1]), dtype=audio.dtype)
+            audio = np.concatenate([audio, pad], axis=1)
+        else:
+            audio = audio[:, :needed]
 
-        return audio
-
-    def _decode_at_time(self, path: Path, t_sec: float, window_dur: float) -> np.ndarray:
-        """Open the file, decode audio at t, close; returns (channels, samples)."""
-        with av.open(str(path), options={"fflags": "fastseek+nobuffer"}) as c:
-            a = next((s for s in c.streams if s.type == "audio"), None)
-            if a is None:
-                raise RuntimeError(f"No audio stream in {path}")
-            return self._decode_from_open(c, a, t_sec, window_dur)
+        return audio  # [C, window_length_samples], float32 in [-1, 1]
 
 
-class RandomWaveformDataset(IterableDataset):
-    """
-    Infinite stream of waveform tensors. One independent generator per worker.
-    Returns audio in shape (2, n_samples) as float32 normalized to [-1, 1].
-    Audio is always stereo.
-    """
-    def __init__(
-        self,
-        source,
-        seed: int = 0,
-        target_sampling_rate = 44100,
-        target_window_length = 88200,  # 2 seconds of audio at 44.1kHz
-        loudness_range = (0.5, 1.5),
-    ):
+class RandomAudioDataset(IterableDataset):
+    """Infinite stream of [C, T] bfloat16 audio windows in [-1, 1]."""
+    def __init__(self, source, seed=0, window_length=2.0, sample_rate=16000):
         super().__init__()
         self.source = source
         self.seed = int(seed)
-        self.target_sampling_rate = target_sampling_rate
-        self.target_window_length = target_window_length
-        self.loudness_range = loudness_range
+        self.window_length = window_length
+        self.sample_rate = sample_rate
 
     def __iter__(self):
         info = get_worker_info()
         wid = info.id if info else 0
-        # Derive a per-worker seed (works with persistent workers)
         wseed = (torch.initial_seed() + self.seed + wid) % (2**32)
         rng = RandomAudioFromMP4s(
-            self.source,
-            seed=int(wseed),
-            target_sampling_rate=self.target_sampling_rate,
-            target_window_length=self.target_window_length
+            self.source, seed=int(wseed),
+            window_length=self.window_length,
+            sample_rate=self.sample_rate,
         )
         for audio in rng:
-            # Convert to torch tensor (already in shape (2, n_samples))
-            # Normalize to [-1, 1] if needed (audio from PyAV is typically float32 already normalized)
-            audio_tensor = torch.from_numpy(audio).float()
+            yield torch.from_numpy(audio).bfloat16()  # [C, T]
 
-            # Pick a random scaling factor for loudness
-            loudness_scale = random.uniform(self.loudness_range[0], self.loudness_range[1])
-            audio_tensor = audio_tensor * loudness_scale
 
-            # Ensure audio is normalized to [-1, 1]
-            #max_val = audio_tensor.abs().max()
-            #if max_val > 1.0:
-            #    audio_tensor = audio_tensor / max_val
-
-            yield audio_tensor.contiguous().clone().permute(1,0)
-
-def get_loader(batch_size, num_workers=4, **data_kwargs):
+def get_loader(batch_size, **data_kwargs):
     if "seed" not in data_kwargs:
         data_kwargs["seed"] = 123
-    ds = RandomWaveformDataset(**data_kwargs)
+    ds = RandomAudioDataset(**data_kwargs)
     return DataLoader(
         ds,
         batch_size=batch_size,
-        num_workers=num_workers,
+        num_workers=4,
         pin_memory=True,
         persistent_workers=True,
         prefetch_factor=2,
@@ -242,20 +169,25 @@ def get_loader(batch_size, num_workers=4, **data_kwargs):
 
 if __name__ == "__main__":
     import time
-    # Test with 2 seconds of audio at 44.1kHz = 88200 samples
+
     loader = get_loader(
-        32,
-        num_workers=8,
-        source="/mnt/data/datasets/extracted_tars/kbm/fps/*/*.mp4",
-        target_sampling_rate=44100,
-        target_window_length=88200
+        4,
+        source="/mnt/data/waypoint_1/owl_control/processed",
+        window_length=2.0,
+        sample_rate=16000,
     )
-    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    loader = iter(loader)
-    for i in range(1000):
+
+    loader_iter = iter(loader)
+    total_time = 0.0
+    for i in range(10):
         t0 = time.time()
-        batch_audio = next(loader)
+        batch = next(loader_iter)
         t1 = time.time()
-        print(f"Batch {i}: shape {tuple(batch_audio.shape)}, dtype {batch_audio.dtype}, "
-              f"min {batch_audio.min():.3f}, max {batch_audio.max():.3f}, load_time {t1-t0:.4f}s")
-        _ = batch_audio.to(dev, non_blocking=True)  # example move to GPU
+        elapsed = t1 - t0
+        total_time += elapsed
+        if i == 0:
+            print(f"Batch shape: {tuple(batch.shape)}, dtype: {batch.dtype}")
+            print(f"Value range: [{batch.min().item():.4f}, {batch.max().item():.4f}]")
+        print(f"Batch {i+1:2d}: {elapsed:.3f}s")
+
+    print(f"\nAverage over 10 batches: {total_time / 10:.3f}s")

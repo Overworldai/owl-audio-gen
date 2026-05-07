@@ -1,28 +1,50 @@
-# Owl Audio Gen Experiments
+# Owl Audio Gen
 
-**Setup**  
+Latent diffusion for unconditional audio generation. The model is a DiT operating
+on latents from Stability AI's [Stable Audio Open 1.0](https://huggingface.co/stabilityai/stable-audio-open-1.0)
+VAE — the VAE is loaded on-the-fly via `diffusers`, so no extra checkpoints or
+submodules are needed.
 
-```
-git submodule init
-git submodule update
-cd owl-vaes
-git switch waypoint_1_prep
-pip install -r requirements.txt
-```
+## Setup
 
-**Loading Audio VAE on cluster**  
-
-```python
-import sys
-sys.path.append("./owl-vaes")
-from owl_vaes import from_pretrained
-
-cfg_path = "owl-vaes/configs/waypoint_1_audio/basic.yml"
-ckpt_path = "/mnt/data/shahbuland/owl-vaes/checkpoints/waypoint_1_audio_basic/step_105000.pt"
-
-vae = from_pretrained(cfg_path, ckpt_path)
+```bash
+pip install torch torchvision torchaudio
+pip install diffusers transformers accelerate
+pip install ema-pytorch wandb omegaconf pyyaml einops av tqdm python-dotenv
 ```
 
-**Usage**  
+You'll also want a HuggingFace token with access to `stabilityai/stable-audio-open-1.0`
+(the model gates downloads behind a license click-through):
 
-`torchrun --nproc_per_node=8 -m train --config_path configs/base.yml`
+```bash
+huggingface-cli login
+```
+
+A `.env` in the repo root is read at startup — drop `WANDB_API_KEY=...` there if
+you don't want to set it in your shell.
+
+## Data
+
+The default loader (`audio_dir_loader`) walks a directory tree for `.mp4` files
+and decodes random audio windows on-the-fly with PyAV. Point `train.data_kwargs.source`
+at any folder of mp4s (it accepts a directory, a list of directories, or a glob).
+
+## Training
+
+Edit `configs/audio_baseline.yml` — at minimum, set:
+
+- `train.data_kwargs.source` → your audio dataset path
+- `wandb.name` → your wandb entity
+
+Then launch:
+
+```bash
+# single GPU
+python train.py --config_path configs/audio_baseline.yml
+
+# multi-GPU (single node, 8 GPUs)
+torchrun --nproc_per_node=8 train.py --config_path configs/audio_baseline.yml
+```
+
+Checkpoints land in `train.checkpoint_dir`, and samples are logged to wandb every
+`train.sample_interval` steps.

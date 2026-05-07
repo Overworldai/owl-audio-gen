@@ -1,6 +1,6 @@
 def get_model_cls(model_id):
-    if model_id == "audio_rft":
-        from .audio_rft import AudioRFT
-        return AudioRFT
+    if model_id == "audio":
+        from .audio import AudioDiffusionModel
+        return AudioDiffusionModel
     else:
         raise ValueError(f"Invalid model ID: {model_id}")

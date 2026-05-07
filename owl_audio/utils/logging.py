@@ -1,7 +1,13 @@
+import os
+import tempfile
+from fractions import Fraction
+
+import av
 import wandb
 import torch
 import torch.distributed as dist
 import numpy as np
+
 
 class LogHelper:
     """
@@ -52,44 +58,80 @@ class LogHelper:
         self.data = {}
         return final
 
-def log_audio_to_wandb(
-    sample: Tensor,
-    sample_rate: int = 44100,
-    max_samples: int = 16,
-) -> dict[str, wandb.Audio]:
+
+def audio_to_wandb(t, sample_rate):
     """
-    Log audio samples to Weights & Biases.
-
-    Args:
-        original: Original audio tensor (B, N, D) where N=samples, D=channels
-        reconstructed: Reconstructed audio tensor (B, N, D)
-        sample_rate: Audio sample rate
-        max_samples: Maximum number of samples to log
-
-    Returns:
-        Dictionary for wandb logging
+    Turn [B, C, T] tensor in [-1, 1] into wandb Audio objects.
     """
-    batch_size = min(sample.size(0), max_samples)
-    audio_logs = {}
+    t = t.clamp(-1, 1).detach().float().cpu()
+    result = []
+    for audio in t:                     # audio: [C, T]
+        arr = audio.numpy().T           # [T, C]
+        result.append(wandb.Audio(arr, sample_rate=int(sample_rate)))
+    return result
 
-    for i in range(batch_size):
-        # Convert to numpy and ensure correct shape for wandb
-        # (B, N, D) -> (N, D)
-        audio = sample[i].detach().cpu().numpy()  # (N, D)
 
-        # For stereo audio, mix down to mono for logging
-        if audio.shape[-1] == 2:
-            # Average across channels: (N, 2) -> (N,)
-            audio = np.mean(audio, axis=-1)
-        else:
-            # Single channel: (N, 1) -> (N,)
-            audio = audio.squeeze(-1)
+def _write_mp4(path, video_thwc, audio_ct, fps, audio_sr):
+    """Write a single mp4 with audio.
+    video_thwc : numpy [T, H, W, 3] uint8
+    audio_ct   : numpy [2, T_audio] float32 in [-1, 1]
+    """
+    H, W = video_thwc.shape[1], video_thwc.shape[2]
+    container = av.open(path, mode='w')
 
-        # Ensure audio is in correct range [-1, 1]
-        audio = np.clip(audio, -1.0, 1.0)
+    v_stream = container.add_stream('libx264', rate=Fraction(fps).limit_denominator(1000))
+    v_stream.width = W
+    v_stream.height = H
+    v_stream.pix_fmt = 'yuv420p'
 
-        audio_logs[f"audio_original_{i}"] = wandb.Audio(
-            audio, sample_rate=sample_rate
-        )
+    a_stream = container.add_stream('aac', rate=int(audio_sr))
 
-    return audio_logs
+    for frame_np in video_thwc:
+        frame = av.VideoFrame.from_ndarray(frame_np, format='rgb24')
+        for pkt in v_stream.encode(frame):
+            container.mux(pkt)
+    for pkt in v_stream.encode(None):
+        container.mux(pkt)
+
+    resampler = av.AudioResampler(format='fltp', layout='stereo', rate=int(audio_sr))
+    a_frame = av.AudioFrame.from_ndarray(audio_ct, format='fltp', layout='stereo')
+    a_frame.sample_rate = int(audio_sr)
+    for rf in resampler.resample(a_frame):
+        for pkt in a_stream.encode(rf):
+            container.mux(pkt)
+    for rf in resampler.resample(None):
+        for pkt in a_stream.encode(rf):
+            container.mux(pkt)
+    for pkt in a_stream.encode(None):
+        container.mux(pkt)
+
+    container.close()
+
+
+def video_audio_to_wandb(video, audio, audio_sr, fps=60):
+    """
+    video : [B, T, C, H, W] float in [0, 1]   (decoded video at fps)
+    audio : [B, 2, T_audio]  float in [-1, 1]  (decoded audio at audio_sr)
+    Audio is trimmed to match video duration so they stay in sync.
+    Returns (list of wandb.Video, list of temp paths to delete after upload).
+    """
+    video = video.detach().float().cpu().clamp(0, 1)
+    audio = audio.detach().float().cpu().clamp(-1, 1)
+
+    T_v = video.shape[1]
+    audio_samples = int(T_v / fps * audio_sr)
+    audio = audio[:, :, :audio_samples]
+
+    wandb_entries = []
+    temp_paths = []
+    for v, a in zip(video, audio):
+        v_np = (v.permute(0, 2, 3, 1).numpy() * 255).astype(np.uint8)
+        a_np = a.numpy()  # [2, T_audio]
+
+        fd, path = tempfile.mkstemp(suffix='.mp4')
+        os.close(fd)
+        _write_mp4(path, v_np, a_np, fps, audio_sr)
+        wandb_entries.append(wandb.Video(path, format="mp4"))
+        temp_paths.append(path)
+
+    return wandb_entries, temp_paths
