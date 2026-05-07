@@ -172,7 +172,7 @@ if __name__ == "__main__":
 
     loader = get_loader(
         4,
-        source="/mnt/data/waypoint_1/owl_control/processed",
+        source="/path/to/mp4s",
         window_length=2.0,
         sample_rate=16000,
     )

@@ -208,8 +208,8 @@ if __name__ == "__main__":
 
     loader = get_loader(
         2,
-        source="/mnt/data/waypoint_1/owl_control/processed",
-        encoded="/mnt/data/waypoint_1/owl_control/encoded",
+        source="/path/to/mp4s",
+        encoded="/path/to/encoded_latents",
         window_length=10.0,
         sample_rate=44100,
         video_window_frames=75,

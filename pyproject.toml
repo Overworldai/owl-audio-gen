@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "owl-audio-gen"
+version = "0.1.0"
+description = "Latent diffusion for unconditional audio generation, on top of the Stable Audio Open VAE."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Overworld Team"}
+]
+keywords = ["audio", "diffusion", "generative", "deep-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.5.0",
+    "numpy",
+    "einops>=0.7.0",
+    "pyyaml>=6.0",
+    "omegaconf>=2.3.0",
+    "tqdm>=4.65.0",
+    "av>=11.0.0",
+    "ema-pytorch>=0.3.0",
+    "wandb>=0.16.0",
+    "diffusers>=0.30.0",
+    "transformers>=4.40.0",
+    "accelerate>=0.30.0",
+    "rotary-embedding-torch>=0.8.8",
+    "python-dotenv>=1.0.0",
+    "huggingface_hub>=0.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Overworldai/owl-audio-gen"
+Repository = "https://github.com/Overworldai/owl-audio-gen"
+
+[tool.setuptools.packages.find]
+include = ["owl_audio*"]

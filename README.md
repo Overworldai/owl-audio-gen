@@ -1,27 +1,27 @@
 # Owl Audio Gen
 
 Latent diffusion for unconditional audio generation. The model is a DiT operating
-on latents from Stability AI's [Stable Audio Open 1.0](https://huggingface.co/stabilityai/stable-audio-open-1.0)
-VAE — the VAE is loaded on-the-fly via `diffusers`, so no extra checkpoints or
-submodules are needed.
+on audio latents from any pre-trained audio VAE.
 
 ## Setup
 
 ```bash
-pip install torch torchvision torchaudio
-pip install diffusers transformers accelerate
-pip install ema-pytorch wandb omegaconf pyyaml einops av tqdm python-dotenv
-```
-
-You'll also want a HuggingFace token with access to `stabilityai/stable-audio-open-1.0`
-(the model gates downloads behind a license click-through):
-
-```bash
-huggingface-cli login
+git clone https://github.com/Overworldai/owl-audio-gen.git
+cd owl-audio-gen
+pip install -e .
 ```
 
 A `.env` in the repo root is read at startup — drop `WANDB_API_KEY=...` there if
 you don't want to set it in your shell.
+
+## Audio VAE
+
+The training loop encodes raw audio on-the-fly with a frozen VAE. The baseline
+uses the VAE from
+[Stable Audio Open 1.0](https://huggingface.co/stabilityai/stable-audio-open-1.0)
+That model is gated, so to use it
+as-is you'll need to accept the license on HuggingFace and run
+`huggingface-cli login`. Support for more VAEs/custom VAEs is a WIP.
 
 ## Data
 
