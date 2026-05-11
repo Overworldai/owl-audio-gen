@@ -59,10 +59,14 @@ class RandomAudioVideoFromMP4s:
         pairs = []
         for mp4 in RandomAudioVideoFromMP4s._find_mp4s(source):
             folder = mp4.parent.name
-            latent_path = encoded / folder / "taehv1_5" / "000000_latent.pt"
-            if latent_path.exists():
-                pairs.append((mp4, latent_path))
-        print(f"[DataLoader] Found {len(pairs)} paired (mp4, latent) files.")
+            video_name = mp4.stem
+            latent_dir = encoded / folder / "taehv1_5" / f"{video_name}_latent"
+            if latent_dir.exists():
+                chunk_files = sorted(latent_dir.glob("*.pt"))
+                for chunk_path in chunk_files:
+                    pairs.append((mp4, chunk_path))
+
+        print(f"[DataLoader] Found {len(pairs)} paired chunks.")
         return pairs
 
     def __iter__(self):
@@ -74,44 +78,41 @@ class RandomAudioVideoFromMP4s:
                 raise RuntimeError("All pairs failed to load.")
 
             idx = self.rng.randrange(len(self.pairs))
-            mp4_path, latent_path = self.pairs[idx]
+            mp4_path, chunk_path = self.pairs[idx]
 
             try:
-                # Cache video duration
+                # duration cache
                 if mp4_path not in self.meta:
                     with av.open(str(mp4_path)) as c:
                         if not any(s.type == "audio" for s in c.streams):
                             self.pairs.pop(idx)
                             continue
+                
                         dur = (c.duration / 1e6) if c.duration is not None else 600.0
                     self.meta[mp4_path] = float(dur)
 
                 dur = self.meta[mp4_path]
-                max_t = dur - self.window_length - 0.05
-                if max_t <= 0:
+                
+                # chunk index from filename
+                chunk_idx = int(chunk_path.stem)
+                # since chunk <> window
+                t_start = chunk_idx * self.window_length
+
+                if t_start + self.window_length > dur:
                     self.pairs.pop(idx)
                     continue
 
-                t_start = self.rng.random() * max_t
-
-                # mmap-load latent — no full tensor in memory
-                latent = torch.load(str(latent_path), map_location="cpu", mmap=True)
-                if tuple(latent.shape[-2:]) != self.expected_hw:
-                    continue
-                n_latent = len(latent)  # total latent frames for full video
-
-                latent_start = int(t_start / dur * n_latent)
-                if latent_start + self.video_window_frames > n_latent:
-                    continue
-
-                # Decode audio window
-                audio = self._decode_audio(str(mp4_path), t_start)  # [C, T_audio]
-
-                # Clone the mmap slice to get an owned tensor
-                video = latent[latent_start : latent_start + self.video_window_frames].clone()
-
-                return audio, video  # ([C, T_audio], [T_lat, C, H, W])
-
+                # decode aligned audio
+                audio = self._decode_audio(str(mp4_path), t_start) # [C, T_audio]
+                
+                # load latent chunk
+                video = torch.load(
+                    str(chunk_path),
+                    map_location="cpu",
+                    mmap=True
+                ).clone().squeeze(0)
+                return audio, video # ([C, T_audio], [T_lat, C, H, W])
+            
             except Exception:
                 self.pairs.pop(idx)
                 continue

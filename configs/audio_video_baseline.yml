@@ -1,0 +1,65 @@
+model:
+  model_id: audio
+  rope_cls: audio
+  n_layers: 16
+  n_heads: 16
+  d_model: 1024
+  d_text: 0           # unused, satisfies ModelConfig
+  channels: 64        # stable audio VAE latent channels
+  patch_size: 1       # over latent frames
+  sample_size: [1, 1] # unused, satisfies ModelConfig
+  window_length: 10.0
+  sample_rate: 21.2  # latent fps
+  x0_mode: False
+  noise_scale: 1.0
+  mlp_ratio: 4
+  video_patch_content: 29440  # C*H*W = 32*23*40
+  cfg_prob: 0.1
+
+train:
+  trainer_id: audio_video
+  data_id: audio_video_loader
+  data_kwargs:
+    source: /workspace/dataset/source/
+    encoded: /workspace/dataset/encoded/
+    window_length: 10.0
+    sample_rate: 44100
+    video_window_frames: 300
+    expected_hw: [23, 40]
+  target_batch_size: 128
+  batch_size: 16  
+  epochs: 1000
+  opt: Muon
+  opt_kwargs:
+    lr: 1.0e-5
+    momentum: 0.95
+    adamw_lr: 1.0e-4
+    adamw_wd: 1.0e-2
+    adamw_eps: 1.0e-8
+    adamw_betas: [0.95, 0.95]
+    adamw_keys:
+      - core.proj_in
+      - core.proj_out
+      - core.norm_out
+      - core.ts_embed
+      - core.video_proj
+      - .adaln1
+      - .adaln2
+      - .gate1
+      - .gate2
+  checkpoint_dir: checkpoints/audio_video_baseline
+  resume_ckpt: null
+  sample_interval: 200
+  save_interval: 5000
+  sampler_id: audio_video
+  sampling_steps: 50
+  cfg_scale: 1.5
+  n_samples: 2
+  video_vae_id: taehv
+  video_vae_ckpt: /workspace/owl-audio-gen/taehv/taehv1_5.pth
+  video_fps: 30
+
+wandb:
+  name: its-nmt05
+  project: owl-audio-gen
+  run_name: audio-baseline

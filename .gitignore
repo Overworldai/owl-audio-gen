@@ -28,6 +28,9 @@ runs/
 logs/
 *.log
 
+# Shell scripts
+*.sh
+
 # OS / editor
 .DS_Store
 Thumbs.db
