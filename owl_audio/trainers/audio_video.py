@@ -12,7 +12,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from diffusers import StableAudioPipeline
 
 from .base import BaseTrainer
-from ..models.audio import AudioDiffusionModel
+from ..models import get_model_cls
 from ..sampling.audio_video import audio_video_sample
 from ..data import get_loader
 from ..muon import init_muon
@@ -33,7 +33,8 @@ class AudioVideoTrainer(BaseTrainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.model = AudioDiffusionModel(self.model_cfg)
+        self.model_id = getattr(self.model_cfg, "model_id", "vid2audio")
+        self.model = get_model_cls(self.model_id)(self.model_cfg)
 
         if self.rank == 0:
             param_count = sum(p.numel() for p in self.model.parameters())
@@ -103,7 +104,7 @@ class AudioVideoTrainer(BaseTrainer):
         self.vae.decode = torch.compile(self.vae.decode)
 
         if self.video_vae_id == "taehv":
-            from taehv import TAEHV
+            from taehv.taehv import TAEHV
             _taehv = TAEHV(self.video_vae_ckpt).cuda().bfloat16().eval()
             self.video_encode_fn = lambda x: _taehv.encode_video(x)
             self.video_decode_fn = lambda x: _video_self_pad(_taehv.decode_video)(x).clamp(0, 1)

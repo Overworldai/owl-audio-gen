@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 import einops as eo
 from .modulation import AdaLN, Gate
-from .attn import Attn
+from .attn import Attn, CrossAttn
 from .mlp import MLP
 
 class DiTBlock(nn.Module):
@@ -23,8 +23,12 @@ class DiTBlock(nn.Module):
         self.gate1 = Gate(config)
         self.adaln2 = AdaLN(config)
         self.gate2 = AdaLN(config)
+
+        self.cross_attn = CrossAttn(config)
+        self.adaln_cross = AdaLN(config)
+        self.gate_cross = Gate(config)
     
-    def forward(self, x, cond, attn_mask):
+    def forward(self, x, cond, attn_mask, video_tokens):
         # x : [b,n*p,d]
         # cond : [b,n,d]
         # attn_mask : flex attn block mask
@@ -35,6 +39,13 @@ class DiTBlock(nn.Module):
         x = self.attn(x, attn_mask)
         x = self.gate1(x, cond)
         x = res1 + x
+
+        if video_tokens is not None:
+            res = x.clone()
+            x = self.adaln_cross(x, cond)
+            x = self.cross_attn(x, video_tokens)
+            x = self.gate_cross(x, cond)
+            x = res + x
 
         res2 = x.clone()
         x = self.adaln2(x, cond)
@@ -56,9 +67,9 @@ class DiT(nn.Module):
             self.blocks.append(DiTBlock(config))
         self.blocks = nn.ModuleList(self.blocks)
     
-    def forward(self, x, cond, attn_mask):
+    def forward(self, x, cond, attn_mask, video_tokens):
         for block in self.blocks:
-            x = block(x, cond, attn_mask)
+            x = block(x, cond, attn_mask, video_tokens)
         return x
 
 class UViT(nn.Module):

@@ -1,5 +1,5 @@
 model:
-  model_id: audio
+  model_id: vid2audio
   rope_cls: audio
   n_layers: 16
   n_heads: 16
@@ -9,7 +9,8 @@ model:
   patch_size: 1       # over latent frames
   sample_size: [1, 1] # unused, satisfies ModelConfig
   window_length: 10.0
-  sample_rate: 21.2  # latent fps
+  sample_rate: 21.2   # audio latent fps
+  video_sample_r: 7.5       # video latent fps
   x0_mode: False
   noise_scale: 1.0
   mlp_ratio: 4
@@ -27,7 +28,7 @@ train:
     video_window_frames: 300
     expected_hw: [20, 40]
   target_batch_size: 128
-  batch_size: 16  
+  batch_size: 32
   epochs: 1000
   opt: Muon
   opt_kwargs:
@@ -47,7 +48,9 @@ train:
       - .adaln2
       - .gate1
       - .gate2
-  checkpoint_dir: checkpoints/audio_video_baseline
+      - .adaln_cross
+      - .gate_cross
+  checkpoint_dir: checkpoints/vid2audio_baseline
   resume_ckpt: null
   sample_interval: 200
   save_interval: 5000

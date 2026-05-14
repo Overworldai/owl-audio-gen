@@ -61,5 +61,34 @@ class AudioRoPE(nn.Module):
         return q, k
 
 
+class VideoAudioRoPE(nn.Module):
+    """1D RoPE for audio to video temporal alignment"""
+    def __init__(self, config):
+        super().__init__()
+        dim_head = config.d_model // config.n_heads
+        self.rope = RotaryEmbedding(dim_head // 2, max_freq=32)
+
+        audio_dt = 1 / config.sample_rate
+        video_dt = 1 / config.video_sr
+
+        audio_times = torch.arange(config.window_length * config.sample_rate).float() * audio_dt
+        video_times = torch.arange(config.window_length * config.video_sr).float() * video_dt
+
+        audio_freqs = self.rope(audio_times)
+        video_freqs = self.rope(video_times)
+
+        self.register_buffer("audio_freqs", audio_freqs, persistent=False)
+        self.register_buffer("video_freqs", video_freqs, persistent=False)
+
+    def apply(self, x, freqs):
+        orig_dtype = x.dtype
+        x = apply_rotary_emb(freqs.detach().float(), x.float(), seq_dim=2)
+        return x.to(orig_dtype)
+
+    def forward(self, q, k):
+        q = self.apply(q, self.audio_freqs)
+        k = self.apply(k, self.video_freqs)
+        return q, k
+
 def get_rope_cls(name):
-    return {"image": ImageRoPE, "audio": AudioRoPE}[name]
+    return {"image": ImageRoPE, "audio": AudioRoPE, "vid2audio": VideoAudioRoPE}[name]

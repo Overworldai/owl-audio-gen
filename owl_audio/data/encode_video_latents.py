@@ -115,7 +115,7 @@ def encode_missing_videos(
     if len(missing) == 0:
          print("All videos already encoded")
          return
-    print(f"Encoding {len(missing)} missing latents")
+    print(f"Encoding {len(missing)} missing videos")
 
     for mp4_path, latent_path in missing:
         try:
@@ -153,22 +153,21 @@ if __name__ == '__main__':
     video_vae_ckpt = "/workspace/owl-audio-gen/taehv/taehv1_5.pth"
     
     # load vae encode fn
-    repo_root = Path(__file__).resolve().parents[2]
-    sys.path.append(str(repo_root))
-    from taehv import TAEHV
+    from taehv.taehv import TAEHV
     _taehv = TAEHV(video_vae_ckpt).cuda().bfloat16().eval()
-    video_encode_fn = lambda x: _taehv.encode_video(x)
+    video_encode_fn = lambda x: _taehv.encode_video(x, show_progress_bar=False)
      
     target_fps = 30
     window_length = 10.0
     desired_chunk_size = window_length * target_fps # chunk <> window
+    size = (640, 320) # approx. 360p
 
     encode_missing_videos(
         source="/workspace/dataset/source/",
         encoded="/workspace/dataset/encoded/",
         vae_encode_fn=video_encode_fn,
         vae_name="taehv1_5",
-        resize=(640, 360), # set to 360p for now
+        resize=size,
         chunk_size=desired_chunk_size,
         target_fps=target_fps
     )

@@ -92,3 +92,32 @@ class Attn(nn.Module):
         x_out = flex_attention(q,k,v, block_mask = attn_mask)
         x_out = eo.rearrange(x_out, 'b h n d -> b n (h d)')
         return self.out(x_out)
+
+class CrossAttn(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+
+        d_model = config.d_model
+        n_heads = config.n_heads
+
+        self.dim = d_model // n_heads
+        self.n_heads = n_heads
+
+        self.q = nn.Linear(d_model, d_model, bias = False)
+        self.kv = nn.Linear(d_model, 2 * d_model, bias = False)
+        self.out = nn.Linear(d_model, d_model)
+
+        self.qk_norm = QKNorm(self.dim)
+        self.rope = get_rope_cls("vid2audio")(config)
+
+    def forward(self, x, video_tokens):
+        # x is [b, T_a, d]
+        # video_tokens : [b, T_v, d]
+        q = self.q(x)
+        q = eo.rearrange(q, 'b n (h d) -> b h n d', d = self.dim)
+        k,v = eo.rearrange(self.kv(video_tokens), 'b n (two h d) -> two b h n d', two = 2, d = self.dim)
+        q,k = self.qk_norm(q,k)
+        q,k = self.rope(q,k)
+        x_out = F.scaled_dot_product_attention(q,k,v)
+        x_out = eo.rearrange(x_out, 'b h n d -> b n (h d)')
+        return self.out(x_out)
