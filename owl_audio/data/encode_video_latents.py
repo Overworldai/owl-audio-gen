@@ -1,11 +1,12 @@
-import glob
-import os
+import os, glob, argparse
 from pathlib import Path
-import av
+from owl_audio.configs import Config
 import numpy as np
-import torch
+
 from tqdm import tqdm
-import sys
+import torch
+import av
+
 
 
 def _find_mp4s(source):
@@ -150,24 +151,25 @@ def encode_missing_videos(
 
 
 if __name__ == '__main__':
-    video_vae_ckpt = "/workspace/owl-audio-gen/taehv/taehv1_5.pth"
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--config_path", type=str, help="Path to config YAML file")
+    parser.add_argument('--device', type=str, default="cuda")
+    args = parser.parse_args()
+
+    cfg = Config.from_yaml(args.config_path)
     
     # load vae encode fn
     from taehv.taehv import TAEHV
-    _taehv = TAEHV(video_vae_ckpt).cuda().bfloat16().eval()
+    _taehv = TAEHV(cfg.train.video_vae_ckpt).cuda().bfloat16().eval()
     video_encode_fn = lambda x: _taehv.encode_video(x, show_progress_bar=False)
      
-    target_fps = 30
-    window_length = 10.0
-    desired_chunk_size = window_length * target_fps # chunk <> window
-    size = (640, 320) # approx. 360p
-
     encode_missing_videos(
-        source="/workspace/dataset/source/",
-        encoded="/workspace/dataset/encoded/",
+        source=cfg.train.data_kwargs.source,
+        encoded=cfg.train.data_kwargs.encoded,
         vae_encode_fn=video_encode_fn,
         vae_name="taehv1_5",
-        resize=size,
-        chunk_size=desired_chunk_size,
-        target_fps=target_fps
+        resize=cfg.train.video_size,
+        chunk_size=cfg.train.data_kwargs.video_window_frames,
+        target_fps=cfg.train.video_fps
     )

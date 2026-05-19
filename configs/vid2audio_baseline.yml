@@ -10,7 +10,7 @@ model:
   sample_size: [1, 1] # unused, satisfies ModelConfig
   window_length: 10.0
   sample_rate: 21.2   # audio latent fps
-  video_sample_r: 7.5       # video latent fps
+  video_sr: 7.5       # video latent fps
   x0_mode: False
   noise_scale: 1.0
   mlp_ratio: 4
@@ -61,6 +61,8 @@ train:
   video_vae_id: taehv
   video_vae_ckpt: /workspace/owl-audio-gen/taehv/taehv1_5.pth
   video_fps: 30
+  video_size: [640, 320]  # approx. 360p
+  vae_id: ltx2            # audio VAE id
 
 wandb:
   name: its-nmt05

@@ -68,14 +68,14 @@ class VideoAudioRoPE(nn.Module):
         dim_head = config.d_model // config.n_heads
         self.rope = RotaryEmbedding(dim_head // 2, max_freq=32)
 
-        audio_dt = 1 / config.sample_rate
-        video_dt = 1 / config.video_sr
-
-        audio_times = torch.arange(config.window_length * config.sample_rate).float() * audio_dt
-        video_times = torch.arange(config.window_length * config.video_sr).float() * video_dt
-
-        audio_freqs = self.rope(audio_times)
-        video_freqs = self.rope(video_times)
+        audio_freqs = self.rope(
+            torch.arange(config.window_length * config.sample_rate).float()
+            / config.sample_rate
+        )
+        video_freqs = self.rope(
+            torch.arange(config.window_length * config.video_sr).float()
+            / config.video_sr
+        )
 
         self.register_buffer("audio_freqs", audio_freqs, persistent=False)
         self.register_buffer("video_freqs", video_freqs, persistent=False)

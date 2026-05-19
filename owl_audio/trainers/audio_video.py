@@ -9,10 +9,10 @@ import torch
 import wandb
 from ema_pytorch import EMA
 from torch.nn.parallel import DistributedDataParallel as DDP
-from diffusers import StableAudioPipeline
 
 from .base import BaseTrainer
 from ..models import get_model_cls
+from ..models.vae_wrapper import VAEWrapper
 from ..sampling.audio_video import audio_video_sample
 from ..data import get_loader
 from ..muon import init_muon
@@ -33,8 +33,8 @@ class AudioVideoTrainer(BaseTrainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.model_id = getattr(self.model_cfg, "model_id", "vid2audio")
-        self.model = get_model_cls(self.model_id)(self.model_cfg)
+        model_id = getattr(self.model_cfg, "model_id", "vid2audio")
+        self.model = get_model_cls(model_id)(self.model_cfg)
 
         if self.rank == 0:
             param_count = sum(p.numel() for p in self.model.parameters())
@@ -46,17 +46,12 @@ class AudioVideoTrainer(BaseTrainer):
         self.scaler = None
         self.total_step_counter = 0
 
-        self.latent_t = int(self.model_cfg.window_length * self.model_cfg.sample_rate)
-
+        vae_id = getattr(self.train_cfg, "vae_id", None)
         if self.rank == 0:
-            print("Loading Stable Audio VAE...")
-        pipe = StableAudioPipeline.from_pretrained(
-            "stabilityai/stable-audio-open-1.0", torch_dtype=torch.float16
-        )
-        self.vae = pipe.vae
-        self.raw_audio_sr = self.vae.config.sampling_rate
-        del pipe
-
+            print(f"Loading {vae_id} Audio VAE...")
+        self.vae = VAEWrapper(self.train_cfg)
+        self.raw_audio_sr = self.vae.sample_rate
+       
         self.video_vae_id = getattr(self.train_cfg, "video_vae_id", None)
         self.video_vae_ckpt = getattr(self.train_cfg, "video_vae_ckpt", None)
         self.video_decode_fn = None
@@ -85,23 +80,10 @@ class AudioVideoTrainer(BaseTrainer):
             self.scheduler.load_state_dict(save_dict["scheduler"])
         self.total_step_counter = save_dict["total_step_counter"]
 
-    @torch.no_grad()
-    def encode_audio(self, raw_audio):
-        """[B, 2, T_raw] bf16 → [B, C, latent_t] bf16"""
-        latents = self.vae.encode(raw_audio).latent_dist.sample()
-        return latents[..., :self.latent_t]
-
-    @torch.no_grad()
-    def decode_audio(self, latents):
-        """[B, C, latent_t] bf16 → [B, 2, T_raw] bf16"""
-        return self.vae.decode(latents).sample
-
     def train(self):
         torch.cuda.set_device(self.local_rank)
 
         self.vae = self.vae.cuda().bfloat16().eval()
-        self.vae.encode = torch.compile(self.vae.encode)
-        self.vae.decode = torch.compile(self.vae.decode)
 
         if self.video_vae_id == "taehv":
             from taehv.taehv import TAEHV
@@ -155,7 +137,7 @@ class AudioVideoTrainer(BaseTrainer):
                 raw_audio = raw_audio.to(self.device).bfloat16()
                 video_latents = video_latents.to(self.device).bfloat16()
 
-                audio_latents = self.encode_audio(raw_audio)   # [B, C, latent_t]
+                audio_latents = self.vae.encode_audio(raw_audio)   # [B, C, latent_t]
 
                 with ctx:
                     loss = self.model(audio_latents, video=video_latents) / accum_steps
@@ -200,7 +182,7 @@ class AudioVideoTrainer(BaseTrainer):
                                     dtype=torch.bfloat16,
                                     cfg_scale=cfg_scale,
                                 )
-                            decoded_audio = self.decode_audio(audio_samples)  # [B, 2, T_raw]
+                            decoded_audio = self.vae.decode_audio(audio_samples)  # [B, 2, T_raw]
 
                             if self.video_decode_fn is not None:
                                 decoded_video = self.video_decode_fn(cond_video)  # [B, T, C, H, W] in [0,1]

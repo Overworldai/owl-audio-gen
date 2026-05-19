@@ -54,21 +54,9 @@ class AudioDiffusionCore(nn.Module):
         x = eo.rearrange(x, 'b c (n_p p) -> b n_p (p c)', p=self.patch_size)
         x = self.proj_in(x)  # [B, n_p, d_model]
 
-        # T_v = 0
-        # if video_tokens is not None:
-        #     T_v = video_tokens.shape[1]
-        #     x = torch.cat([video_tokens, x], dim=1)
-        # elif video is not None and self.video_proj is not None:
-        #     video_tokens = self.project_video(video)          # [B, T_v, d_model]
-        #     T_v = video_tokens.shape[1]
-        #     x = torch.cat([video_tokens, x], dim=1)
-
         x = self.dit(x, cond, attn_mask, video_tokens)
         x = self.norm_out(x, cond)
         x = self.proj_out(x)
-
-        # if T_v > 0:
-        #     x = x[:, T_v:, :]                                # strip video prefix
 
         # Depatchify: [B, n_p, p*C] -> [B, C, n_p*p]
         x = eo.rearrange(x, 'b n_p (p c) -> b c (n_p p)', p=self.patch_size, c=self.channels)
