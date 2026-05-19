@@ -195,10 +195,10 @@ def get_loader(batch_size, **data_kwargs):
     return DataLoader(
         ds,
         batch_size=batch_size,
-        num_workers=4,
+        num_workers=8,
         pin_memory=True,
         persistent_workers=True,
-        prefetch_factor=2,
+        prefetch_factor=4,
         drop_last=True,
         multiprocessing_context="spawn",
     )

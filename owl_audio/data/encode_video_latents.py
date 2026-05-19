@@ -1,12 +1,13 @@
 import os, glob, argparse
 from pathlib import Path
-from owl_audio.configs import Config
 import numpy as np
 
 from tqdm import tqdm
 import torch
 import av
 
+from taehv.taehv import TAEHV
+from owl_audio.configs import Config
 
 
 def _find_mp4s(source):
@@ -151,6 +152,7 @@ def encode_missing_videos(
 
 
 if __name__ == '__main__':
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0" # use only 'cuda:0' for now
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--config_path", type=str, help="Path to config YAML file")
@@ -160,7 +162,6 @@ if __name__ == '__main__':
     cfg = Config.from_yaml(args.config_path)
     
     # load vae encode fn
-    from taehv.taehv import TAEHV
     _taehv = TAEHV(cfg.train.video_vae_ckpt).cuda().bfloat16().eval()
     video_encode_fn = lambda x: _taehv.encode_video(x, show_progress_bar=False)
      

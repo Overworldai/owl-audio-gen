@@ -46,10 +46,18 @@ class AudioVideoTrainer(BaseTrainer):
         self.scaler = None
         self.total_step_counter = 0
 
+        # Latent length derived entirely from model config
+        self.latent_t = int(self.model_cfg.window_length * self.model_cfg.sample_rate)
+
         vae_id = getattr(self.train_cfg, "vae_id", None)
         if self.rank == 0:
             print(f"Loading {vae_id} Audio VAE...")
-        self.vae = VAEWrapper(self.train_cfg)
+        self.vae = VAEWrapper(
+            vae_id=vae_id,
+            sample_rate=getattr(self.train_cfg.data_kwargs, "sample_rate", None),
+            latent_sr=getattr(self.model_cfg, "sample_rate", None),
+            window_length=getattr(self.model_cfg, "window_length", None)
+        )
         self.raw_audio_sr = self.vae.sample_rate
        
         self.video_vae_id = getattr(self.train_cfg, "video_vae_id", None)
@@ -82,7 +90,6 @@ class AudioVideoTrainer(BaseTrainer):
 
     def train(self):
         torch.cuda.set_device(self.local_rank)
-
         self.vae = self.vae.cuda().bfloat16().eval()
 
         if self.video_vae_id == "taehv":
