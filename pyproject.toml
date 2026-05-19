@@ -38,6 +38,7 @@ dependencies = [
     "rotary-embedding-torch>=0.8.8",
     "python-dotenv>=1.0.0",
     "huggingface_hub>=0.20.0",
+    "ltx-core"
 ]
 
 [project.optional-dependencies]

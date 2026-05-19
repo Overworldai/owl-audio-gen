@@ -11,6 +11,7 @@ from owl_audio.configs import Config
 
 
 class VAEWrapper(nn.Module):
+    """Wrapper for Audio VAEs Stable Audio and LTX2"""
     def __init__(self, config):
         super().__init__()
         self.vae_id = config.vae_id
