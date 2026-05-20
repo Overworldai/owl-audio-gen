@@ -61,12 +61,12 @@ class VAEWrapper(nn.Module):
             latents = self.vae.encode(raw_audio).latent_dist.sample()
             return latents[..., :self.latent_t]
         elif self.vae_id == 'ltx2':
-            self.vae.audio_processor.float() # cuFFT supports only float32
+            self.audio_processor.float() # cuFFT supports only float32
             audio = Audio(raw_audio.float(), self.sample_rate)
             mel = self.audio_processor.waveform_to_mel(audio).bfloat16()    # [B, 2, T_mel, n_mels] bf16
             latents = self.vae.encode(mel).latent_dist.sample()             # [B, 8, T_mel/4, 16] bf16
             latents = rearrange(latents, 'b c t f -> b (c f) t')            # [B, 128, T_mel/4] bf16
-            return latents[..., :self.latent_t, :]
+            return latents[..., :self.latent_t]
         else:
             raise ValueError(f"Unknown Audio VAE id: {self.vae_id}")
         
