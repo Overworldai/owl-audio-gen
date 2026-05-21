@@ -57,12 +57,12 @@ train:
   sampler_id: audio_video
   sampling_steps: 50
   cfg_scale: 1.5
-  n_samples: 1
+  n_samples: 2
   video_vae_id: taehv
   video_vae_ckpt: /workspace/owl-audio-gen/taehv/taehv1_5.pth
   video_fps: 30
   video_size: [640, 320]  # approx. 360p
-  vae_id: syable_audio    # audio VAE id
+  vae_id: stable_audio    # audio VAE id
 
 wandb:
   name: its-nmt05

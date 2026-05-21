@@ -7,6 +7,7 @@ from diffusers import AutoencoderKLLTX2Audio, StableAudioPipeline
 from diffusers.pipelines.ltx2.vocoder import LTX2Vocoder
 from ltx_core.model.audio_vae.ops import AudioProcessor
 from ltx_core.types import Audio
+from stable_audio_3 import AutoencoderModel
 
 
 class VAEWrapper(nn.Module):
@@ -28,6 +29,9 @@ class VAEWrapper(nn.Module):
             self.vae.encode = torch.compile(self.vae.encode)
             self.vae.decode = torch.compile(self.vae.decode)
             del pipe
+        elif self.vae_id == 'stable_audio_3':
+            self.vae = AutoencoderModel.from_pretrained("same-l")
+            self.vae.autoencoder.bfloat16()
         elif self.vae_id == 'ltx2':
             self.vae = AutoencoderKLLTX2Audio.from_pretrained(
                 "Lightricks/LTX-2", 
@@ -60,6 +64,9 @@ class VAEWrapper(nn.Module):
             # [B, 2, T_raw] bf16 → [B, C, latent_t] bf16
             latents = self.vae.encode(raw_audio).latent_dist.sample()
             return latents[..., :self.latent_t]
+        elif self.vae_id == 'stable_audio_3':
+            latents = self.vae.encode(raw_audio, self.sample_rate)
+            return latents[..., :self.latent_t]
         elif self.vae_id == 'ltx2':
             self.audio_processor.float() # cuFFT supports only float32
             audio = Audio(raw_audio.float(), self.sample_rate)
@@ -75,6 +82,8 @@ class VAEWrapper(nn.Module):
         if self.vae_id == 'stable_audio':
             # [B, C, latent_t] bf16 → [B, 2, T_raw] bf16
            return self.vae.decode(latents).sample
+        elif self.vae_id == 'stable_audio_3':
+            return self.vae.decode(latents)
         elif self.vae_id == 'ltx2':
             latents = rearrange(latents, 'b (c f) t -> b c t f', c=self.latent_ch)      
             mel_hat = self.vae.decode(latents).sample   # [B, 2, T_mel, n_mels] bf16

@@ -22,7 +22,7 @@ class DiTBlock(nn.Module):
         self.adaln1 = AdaLN(config)
         self.gate1 = Gate(config)
         self.adaln2 = AdaLN(config)
-        self.gate2 = AdaLN(config)
+        self.gate2 = Gate(config)
 
         self.cross_attn = CrossAttn(config)
         self.adaln_cross = AdaLN(config)
