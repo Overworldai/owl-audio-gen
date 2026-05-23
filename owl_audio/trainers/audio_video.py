@@ -9,6 +9,7 @@ import torch
 import wandb
 from ema_pytorch import EMA
 from torch.nn.parallel import DistributedDataParallel as DDP
+from itertools import cycle
 
 from .base import BaseTrainer
 from ..models import get_model_cls
@@ -129,18 +130,29 @@ class AudioVideoTrainer(BaseTrainer):
         if self.rank == 0:
             wandb.watch(self.get_module(), log="all")
 
-        loader = get_loader(
-            self.train_cfg.data_id,
-            self.train_cfg.batch_size,
-            **self.train_cfg.data_kwargs,
-        )
         n_samples = getattr(self.train_cfg, "n_samples", 2)
         cfg_scale = getattr(self.train_cfg, "cfg_scale", 1.5)
         pending_video_paths = []  # temp mp4s from previous log step, safe to delete now
 
+        train_loader = get_loader(
+            self.train_cfg.data_id,
+            self.train_cfg.batch_size,
+            split='train',
+            **self.train_cfg.data_kwargs,
+        )
+        
+        # create the holdout data loader
+        holdout_loader = get_loader(
+            self.train_cfg.data_id,
+            self.train_cfg.n_samples, 
+            split='holdout',
+            **self.train_cfg.data_kwargs,
+        )
+        holdout_iter = cycle(holdout_loader)
+        
         local_step = 0
         for _ in range(self.train_cfg.epochs):
-            for raw_audio, video_latents in loader:
+            for raw_audio, video_latents in train_loader:
                 raw_audio = raw_audio.to(self.device).bfloat16()
                 video_latents = video_latents.to(self.device).bfloat16()
 
@@ -177,8 +189,9 @@ class AudioVideoTrainer(BaseTrainer):
                                 except OSError:
                                     pass
                             pending_video_paths = []
-
-                            cond_video = video_latents[:n_samples]
+                            
+                            _, cond_video = next(holdout_iter)
+                            cond_video = cond_video.bfloat16().cuda()
                             with ctx:
                                 audio_samples = audio_video_sample(
                                     self.get_module(ema=True).core,

@@ -27,6 +27,7 @@ train:
     sample_rate: 44100
     video_window_frames: 300
     expected_hw: [20, 40]
+    holdout_ratio: 0.1
   target_batch_size: 128
   batch_size: 32
   epochs: 1000

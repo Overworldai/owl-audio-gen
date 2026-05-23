@@ -1,6 +1,7 @@
 import os, glob, random
 from pathlib import Path
 import numpy as np
+import hashlib
 
 import torch
 from torch.utils.data import IterableDataset, DataLoader, get_worker_info
@@ -24,15 +25,29 @@ class RandomAudioVideoFromMP4s:
 
     def __init__(self, source, encoded, seed=None,
                  window_length=10.0, sample_rate=44100,
-                 video_window_frames=75, expected_hw=(16, 32)):
+                 video_window_frames=75, expected_hw=(16, 32),
+                 split='train', holdout_ratio=0.1):
+        self.seed = seed
         self.window_length = window_length
         self.sample_rate = sample_rate
         self.window_length_samples = int(window_length * sample_rate)
         self.expected_hw = tuple(expected_hw)
         self.video_window_frames = video_window_frames
         self.encoded = Path(encoded)
+        self.split = split
+        self.holdout_ratio = holdout_ratio
 
         self.pairs = self._find_pairs(source, encoded)
+
+        # select the pairs based on current 'split'
+        if self.holdout_ratio > 0:
+            filtered = []
+            for mp4_path, chunk_path in self.pairs:
+                is_holdout = self._is_holdout_latent(chunk_path)
+                if (self.split == 'holdout') == is_holdout:
+                    filtered.append((mp4_path, chunk_path))
+            self.pairs = filtered
+
         if not self.pairs:
             raise RuntimeError("No paired (mp4, latent) files found.")
         self.rng = random.Random(seed)
@@ -68,6 +83,14 @@ class RandomAudioVideoFromMP4s:
 
         print(f"[DataLoader] Found {len(pairs)} paired chunks.")
         return pairs
+    
+    def _load_latent_chunk(self, chunk_path):
+        payload = torch.load(str(chunk_path), map_location='cpu', weights_only=True)
+        if isinstance(payload, dict):   # int8
+            latent = payload['lat_q'].float()
+            scale = payload['scale'].float()
+            return (latent / 127.0) * scale
+        return torch.load(str(chunk_path), map_location='cpu', mmap=True)   # bf16/fp16/fp32
 
     def __iter__(self):
         return self
@@ -106,14 +129,10 @@ class RandomAudioVideoFromMP4s:
                 audio = self._decode_audio(str(mp4_path), t_start) # [C, T_audio]
                 
                 # load latent chunk
-                video = torch.load(
-                    str(chunk_path),
-                    map_location="cpu",
-                    mmap=True
-                ).clone().squeeze(0)
+                video = self._load_latent_chunk(chunk_path)
                 return audio, video # ([C, T_audio], [T_lat, C, H, W])
             
-            except Exception:
+            except Exception as e:
                 self.pairs.pop(idx)
                 continue
 
@@ -158,12 +177,21 @@ class RandomAudioVideoFromMP4s:
             audio = audio[:, :needed]
         return audio  # [C, T_audio] float32
 
+    def _is_holdout_latent(self, chunk_path):
+        if self.holdout_ratio <= 0:
+            return False
+        key = f"{self.seed}:{str(chunk_path)}".encode("utf-8")
+        h = hashlib.sha1(key).hexdigest()
+        v = int(h[:8], 16) / 0xFFFFFFFF
+        return v < self.holdout_ratio
+
 
 class RandomAudioVideoDataset(IterableDataset):
     """Infinite stream of (audio [C, T], video [T_lat, C, H, W]) pairs in bfloat16."""
     def __init__(self, source, encoded, seed=0,
                  window_length=10.0, sample_rate=44100,
-                 video_window_frames=75, expected_hw=(16, 32)):
+                 video_window_frames=75, expected_hw=(16, 32),
+                 split='train', holdout_ratio=0.1):
         super().__init__()
         self.source = source
         self.encoded = encoded
@@ -172,6 +200,8 @@ class RandomAudioVideoDataset(IterableDataset):
         self.sample_rate = sample_rate
         self.video_window_frames = video_window_frames
         self.expected_hw = expected_hw
+        self.split = split
+        self.holdout_ratio = holdout_ratio
 
     def __iter__(self):
         info = get_worker_info()
@@ -183,6 +213,8 @@ class RandomAudioVideoDataset(IterableDataset):
             sample_rate=self.sample_rate,
             video_window_frames=self.video_window_frames,
             expected_hw=self.expected_hw,
+            split=self.split,
+            holdout_ratio=self.holdout_ratio
         )
         for audio, video in rng:
             yield torch.from_numpy(audio).bfloat16(), video.bfloat16()
@@ -195,7 +227,7 @@ def get_loader(batch_size, **data_kwargs):
     return DataLoader(
         ds,
         batch_size=batch_size,
-        num_workers=8,
+        num_workers=4,
         pin_memory=True,
         persistent_workers=True,
         prefetch_factor=4,
