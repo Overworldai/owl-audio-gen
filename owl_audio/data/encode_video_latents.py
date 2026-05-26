@@ -248,18 +248,20 @@ def convert_latent_dtype(latent, save_dtype="bf16"):
         "bf16": torch.bfloat16,
         "fp16": torch.float16,
         "fp32": torch.float32,
+        "int8": torch.int8
     }
 
-    if save_dtype in _DTYPE_MAP:
-        return latent.to(_DTYPE_MAP[save_dtype]), None
-
-    if save_dtype == "int8":
+    dtype = _DTYPE_MAP.get(save_dtype)
+    if dtype is None:
+        raise ValueError(f"Unknown save_dtype={save_dtype}")
+    
+    if save_dtype == 'int8':
         latent = latent.float()
-        scale = torch.amax(latent.abs()).clamp_(min=1e-8)
-        latent_q = (latent * (127.0 / scale)).round_().clamp_(-127, 127).to(torch.int8)
+        scale = torch.abs().amax().clamp(min=1e-8)
+        latent_q = (latent * (127.0 / scale)).round().clamp(-127, 127).to(dtype)
         return latent_q, scale.cpu()
-
-    raise ValueError(f"Unknown save_dtype={save_dtype}")
+    else:
+        return latent.to(dtype), None
 
 
 if __name__ == '__main__':
