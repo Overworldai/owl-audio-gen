@@ -14,7 +14,8 @@ class ModelConfig:
     n_heads: int
     d_model: int
     d_text: int
-
+    video_patch_content: int
+    
     channels: int
     patch_size: Tuple[int, int]
     sample_size: Tuple[int, int]
