@@ -1,3 +1,6 @@
 [submodule "taehv"]
 	path = taehv
 	url = https://github.com/madebyollin/taehv.git
+[submodule "stable_audio_3"]
+	path = stable_audio_3
+	url = https://github.com/Stability-AI/stable-audio-3

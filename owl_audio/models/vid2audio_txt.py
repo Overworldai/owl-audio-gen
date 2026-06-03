@@ -61,7 +61,7 @@ class AudioDiffusionCore(nn.Module):
         # Patchify audio: [B, C, n_p*p] -> [B, n_p, p*C]
         x = eo.rearrange(x, 'b c (n_p p) -> b n_p (p c)', p=self.patch_size)
         x = self.proj_in(x)  # [B, n_p, d_model]
-
+    
         x = self.dit(x, cond, attn_mask, video_tokens, text_tokens)
         x = self.norm_out(x, cond)
         x = self.proj_out(x)
@@ -96,7 +96,7 @@ class AudioDiffusionModel(nn.Module):
         ts = ts.sigmoid()
         return ts
 
-    def forward(self, x, video=None, text=None):
+    def forward(self, x, video=None, text=None, attn_mask=None):
         # x    : [B, C, T]
         # video: [B, T_v, C_v, H_v, W_v] or None
         with torch.no_grad():
@@ -129,7 +129,7 @@ class AudioDiffusionModel(nn.Module):
             B, T_t = text_tokens.shape[:2]
             text_tokens = self.core.null_text[None, None, :].expand(B, T_t, -1)
 
-        pred = self.core(z, ts, video_tokens=video_tokens, text_tokens=text_tokens)
+        pred = self.core(z, ts, video_tokens=video_tokens, text_tokens=text_tokens, attn_mask=attn_mask)
         if self.x0_mode:
             pred = (pred - z) / den
 

@@ -135,3 +135,27 @@ def video_audio_to_wandb(video, audio, audio_sr, fps=60):
         temp_paths.append(path)
 
     return wandb_entries, temp_paths
+
+
+def video_audio_txt_to_wandb(video, audio, captions, audio_sr, fps=60):
+    video = video.detach().float().cpu().clamp(0, 1)
+    audio = audio.detach().float().cpu().clamp(-1, 1)
+
+    T_v = video.shape[1]
+    audio_samples = int(T_v / fps * audio_sr)
+    audio = audio[:, :, :audio_samples]
+
+    wandb_entries = []
+    temp_paths = []
+    for v, a, cap in zip(video, audio, captions):
+        v_np = (v.permute(0, 2, 3, 1).numpy() * 255).astype(np.uint8)
+        a_np = a.numpy()  # [2, T_audio]
+
+        fd, path = tempfile.mkstemp(suffix='.mp4')
+        os.close(fd)
+        _write_mp4(path, v_np, a_np, fps, audio_sr)
+        wandb_entries.append(wandb.Video(path, format="mp4", caption=cap))
+        temp_paths.append(path)
+
+    return wandb_entries, temp_paths
+

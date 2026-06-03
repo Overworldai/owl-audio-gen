@@ -43,14 +43,14 @@ class DiTBlock(nn.Module):
 
         res1 = x.clone()
         x = self.adaln1(x, cond)
-        x = self.attn(x, attn_mask)
+        x = self.attn(x)
         x = self.gate1(x, cond)
         x = res1 + x
 
         if text_tokens is not None and self.cross_attn_text is not None:
             res2 = x.clone()
             x = self.adaln_cross_text(x, cond)
-            x = self.cross_attn_text(x, video_tokens)
+            x = self.cross_attn_text(x, text_tokens, attn_mask)
             x = self.gate_cross_text(x, cond)
             x = res2 + x      
 

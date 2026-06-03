@@ -81,7 +81,7 @@ class VAEWrapper(nn.Module):
     def decode_audio(self, latents):
         if self.vae_id == 'stable_audio':
             # [B, C, latent_t] bf16 → [B, 2, T_raw] bf16
-           return self.vae.decode(latents).sample
+            return self.vae.decode(latents).sample
         elif self.vae_id == 'stable_audio_3':
             return self.vae.decode(latents)
         elif self.vae_id == 'ltx2':

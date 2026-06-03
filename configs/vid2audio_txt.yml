@@ -1,7 +1,7 @@
 model:
   model_id: vid2audio_txt
   rope_cls: audio
-  n_layers: 24
+  n_layers: 16
   n_heads: 16
   d_model: 1024
   d_text: 768         # T5 emb_dim
@@ -30,7 +30,7 @@ train:
     expected_hw: [20, 40]
     holdout_ratio: 0.1
   target_batch_size: 128
-  batch_size: 16
+  batch_size: 24
   epochs: 1000
   opt: Muon
   opt_kwargs:
@@ -61,7 +61,7 @@ train:
   save_interval: 5000
   sampler_id: audio_video
   sampling_steps: 50
-  cfg_scale: 1.5
+  cfg_scale: 2
   n_samples: 2
   video_vae_id: taehv
   video_vae_ckpt: /workspace/owl-audio-gen/taehv/taehv1_5.pth

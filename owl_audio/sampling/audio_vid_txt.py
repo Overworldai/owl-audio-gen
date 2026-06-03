@@ -5,7 +5,7 @@ from .schedulers import get_sd3_euler
 
 
 @torch.no_grad()
-def audio_video_sample(model, shape, video, text, steps, device, dtype,
+def audio_video_sample(model, shape, video, text, attn_mask, steps, device, dtype,
                        cfg_scale=1.5, progress_bar=True):
     """
     CFG flow-matching sampler for video-conditioned audio.
@@ -27,9 +27,9 @@ def audio_video_sample(model, shape, video, text, steps, device, dtype,
     use_cfg = cfg_scale != 1.0
 
     for dt in tqdm(get_sd3_euler(steps).to(device=device, dtype=dtype), disable=not progress_bar):
-        cond_pred = model(x, ts, video_tokens=video_tokens, text_tokens=text_tokens)
+        cond_pred = model(x, ts, video_tokens=video_tokens, text_tokens=text_tokens, attn_mask=attn_mask)
         if use_cfg:
-            uncond_pred = model(x, ts, video_tokens=null_video, text_tokens=null_text)
+            uncond_pred = model(x, ts, video_tokens=null_video, text_tokens=null_text, attn_mask=attn_mask)
             pred = uncond_pred + cfg_scale * (cond_pred - uncond_pred)
         else:
             pred = cond_pred

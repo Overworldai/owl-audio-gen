@@ -83,13 +83,13 @@ class Attn(nn.Module):
 
         #nn.init.zeros_(self.out)
 
-    def forward(self, x, attn_mask):
+    def forward(self, x, attn_mask=None):
         # x is [b,n,d]
         x = self.qkv(x)
         q,k,v = eo.rearrange(x, 'b n (three h d) -> three b h n d', three = 3, d = self.dim)
         q,k = self.qk_norm(q,k)
         q,k = self.rope(q,k)
-        x_out = flex_attention(q,k,v, block_mask = attn_mask)
+        x_out = flex_attention(q,k,v, block_mask=attn_mask)
         x_out = eo.rearrange(x_out, 'b h n d -> b n (h d)')
         return self.out(x_out)
 
@@ -109,13 +109,21 @@ class CrossAttn(nn.Module):
 
         self.qk_norm = QKNorm(self.dim)
 
-    def forward(self, x, cond):
+    def forward(self, x, cond, attn_mask=None):
         # x is [b,n,d]
         q = eo.rearrange(self.q(x), 'b n (h d) -> b h n d', d = self.dim)
         k,v = eo.rearrange(self.kv(cond), 'b n (two h d) -> two b h n d', two = 2, d = self.dim)
         q,k = self.qk_norm(q,k)
 
-        x_out = F.scaled_dot_product_attention(q,k,v)
+        if attn_mask is not None:
+            # [B, 1, 1, L] — broadcast over heads and query positions
+            mask = attn_mask[:, None, None, :].bool()
+            attn_bias = torch.zeros_like(mask, dtype=q.dtype)
+            attn_bias = attn_bias.masked_fill(~mask, float('-inf'))
+        else:
+            attn_bias = None
+
+        x_out = F.scaled_dot_product_attention(q,k,v, attn_mask=attn_bias)
         x_out = eo.rearrange(x_out, 'b h n d -> b n (h d)')
         return self.out(x_out)
 

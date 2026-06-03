@@ -18,7 +18,7 @@ from ..sampling.audio_vid_txt import audio_video_sample
 from ..data import get_loader
 from ..muon import init_muon
 from ..utils import Timer
-from ..utils.logging import LogHelper, audio_to_wandb, video_audio_to_wandb
+from ..utils.logging import LogHelper, audio_to_wandb, video_audio_txt_to_wandb
 
 from transformers import T5EncoderModel, T5Tokenizer
 
@@ -82,7 +82,9 @@ class AudioVideoTextTrainer(BaseTrainer):
             max_length=128
         ).to(self.device)
 
-        return self.text_encoder(**tokens).last_hidden_state  # [B, L, d_text]
+        text_enc = self.text_encoder(**tokens).last_hidden_state  # [B, L, d_text]
+        attn_mask = tokens.attention_mask   # [B, L]
+        return text_enc, attn_mask
 
     def save(self):
         save_dict = {
@@ -173,14 +175,18 @@ class AudioVideoTextTrainer(BaseTrainer):
         for _ in range(self.train_cfg.epochs):
             for raw_audio, video_latents, captions in train_loader:
                 raw_audio = raw_audio.to(self.device).bfloat16()
+                
                 video_latents = video_latents.to(self.device).bfloat16()
-
                 audio_latents = self.vae.encode_audio(raw_audio)   # [B, C, latent_t]
-
-                text_embed = self.encode_text(captions)
+                text, attn_mask = self.encode_text(captions)
 
                 with ctx:
-                    loss = self.model(audio_latents, video=video_latents, text=text_embed) / accum_steps
+                    loss = self.model(
+                        audio_latents, 
+                        video=video_latents, 
+                        text=text, 
+                        attn_mask=attn_mask
+                    ) / accum_steps
                 metrics.log("loss", loss)
 
                 self.scaler.scale(loss).backward()
@@ -213,13 +219,14 @@ class AudioVideoTextTrainer(BaseTrainer):
                             
                             _, cond_video, cond_caption = next(holdout_iter)
                             cond_video = cond_video.bfloat16().cuda()
-                            cond_caption = self.encode_text(cond_caption)
+                            cond_text, attn_mask = self.encode_text(cond_caption)
                             with ctx:
                                 audio_samples = audio_video_sample(
                                     self.get_module(ema=True).core,
                                     shape=(n_samples, self.model_cfg.channels, self.latent_t),
                                     video=cond_video,
-                                    text=cond_caption,
+                                    text=cond_text,
+                                    attn_mask=attn_mask,
                                     steps=self.train_cfg.sampling_steps,
                                     device=self.device,
                                     dtype=torch.bfloat16,
@@ -229,8 +236,9 @@ class AudioVideoTextTrainer(BaseTrainer):
 
                             if self.video_decode_fn is not None:
                                 decoded_video = self.video_decode_fn(cond_video)  # [B, T, C, H, W] in [0,1]
-                                entries, paths = video_audio_to_wandb(
+                                entries, paths = video_audio_txt_to_wandb(
                                     decoded_video, decoded_audio,
+                                    cond_caption,
                                     self.raw_audio_sr,
                                     self.train_cfg.video_fps
                                 )

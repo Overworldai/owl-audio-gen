@@ -6,19 +6,19 @@ import time
 import av
 import torch
 import torch.multiprocessing as mp
-from tqdm import tqdm
-
 from transformers import AutoProcessor, Qwen2AudioForConditionalGeneration
+from tqdm import tqdm
 
 from owl_audio.configs import Config
 
 
 CAPTION_PROMPT = (
     "Listen to this audio clip from a video game. "
-    "Describe every sound event you hear: what produces the sound, "
-    "its intensity (soft / medium / loud), approximate timing within the clip, "
-    "and whether it is foreground or background. "
-    "Focus only on sounds, not visuals."
+    "In 2-3 sentences, describe what sounds are present, "
+    "their source (e.g. weapon, footstep, UI, ambient), "
+    "and overall energy level (quiet/moderate/loud/intense). "
+    "Do not include any timestamps or time references. "
+    "Be specific and concise."
 )
 
 def load_qwen_audio(model_id="Qwen/Qwen2-Audio-7B-Instruct", device="cuda"):
@@ -100,6 +100,15 @@ def iter_audio_windows(mp4_path, window_length, target_sr):
         yield waveform
         buffer = buffer[samples_per_window:]
 
+    # yield the tail window if it has any content
+    if len(buffer) > 0:
+        pad = np.zeros(samples_per_window - len(buffer), dtype=np.float32)
+        waveform = np.concatenate([buffer, pad])
+        peak = np.abs(waveform).max()
+        if peak > 1e-6:
+            waveform = waveform / peak
+        yield waveform
+
 
 @torch.no_grad()
 def _caption_batch(
@@ -108,7 +117,7 @@ def _caption_batch(
     processor,
     model,
     device,
-    max_new_tokens=256,
+    max_new_tokens=80,
 ):
     conversations = [
         [{
@@ -153,6 +162,7 @@ def _caption_batch(
         skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
     )
+    print(captions[0])
     return [c.strip() for c in captions]
 
 def _worker(rank, world_size, cfg, batch_size=48, max_new_tokens=64):
