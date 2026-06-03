@@ -4,7 +4,7 @@ import torchaudio.functional as F
 from einops import rearrange
 
 from diffusers import AutoencoderKLLTX2Audio, StableAudioPipeline
-from diffusers.pipelines.ltx2.vocoder import LTX2Vocoder
+# from diffusers.pipelines.ltx2.vocoder import LTX2Vocoder
 # from ltx_core.model.audio_vae.ops import AudioProcessor
 # from ltx_core.types import Audio
 # from stable_audio_3 import AutoencoderModel

@@ -26,7 +26,7 @@ class RandomAudioVideoFromMP4s:
     def __init__(self, source, encoded, seed=None,
                  window_length=10.0, sample_rate=44100,
                  video_window_frames=75, expected_hw=(16, 32),
-                 split='train', holdout_ratio=0.1, split_seed=123):
+                 split='train', eval_ratio=0.1, split_seed=123):
         self.window_length = window_length
         self.sample_rate = sample_rate
         self.window_length_samples = int(window_length * sample_rate)
@@ -34,17 +34,17 @@ class RandomAudioVideoFromMP4s:
         self.video_window_frames = video_window_frames
         self.encoded = Path(encoded)
         self.split = split
-        self.holdout_ratio = holdout_ratio
+        self.eval_ratio = eval_ratio
         self.split_seed = split_seed
 
         self.pairs = self._find_pairs(source, encoded)
 
         # select the pairs based on current 'split'
-        if self.holdout_ratio > 0:
+        if self.eval_ratio > 0:
             filtered = []
             for mp4_path, chunk_path in self.pairs:
                 is_holdout = self._is_holdout_latent(chunk_path)
-                if (self.split == 'holdout') == is_holdout:
+                if (self.split == 'eval') == is_holdout:
                     filtered.append((mp4_path, chunk_path))
             self.pairs = filtered
 
@@ -170,12 +170,12 @@ class RandomAudioVideoFromMP4s:
         return audio  # [C, T_audio] float32
 
     def _is_holdout_latent(self, chunk_path):
-        if self.holdout_ratio <= 0:
+        if self.eval_ratio <= 0:
             return False
         key = f"{self.split_seed}:{str(chunk_path)}".encode("utf-8")
         h = hashlib.sha1(key).hexdigest()
         v = int(h[:8], 16) / 0xFFFFFFFF
-        return v < self.holdout_ratio
+        return v < self.eval_ratio
 
     def _load_latent_chunk(self, chunk_path):
         payload = torch.load(str(chunk_path), map_location='cpu', weights_only=True)
@@ -190,7 +190,7 @@ class RandomAudioVideoDataset(IterableDataset):
     def __init__(self, source, encoded, seed=0,
                  window_length=10.0, sample_rate=44100,
                  video_window_frames=75, expected_hw=(16, 32),
-                 split='train', holdout_ratio=0.1):
+                 split='train', eval_ratio=0.1):
         super().__init__()
         self.source = source
         self.encoded = encoded
@@ -200,7 +200,7 @@ class RandomAudioVideoDataset(IterableDataset):
         self.video_window_frames = video_window_frames
         self.expected_hw = expected_hw
         self.split = split
-        self.holdout_ratio = holdout_ratio
+        self.eval_ratio = eval_ratio
 
     def __iter__(self):
         info = get_worker_info()
@@ -213,7 +213,7 @@ class RandomAudioVideoDataset(IterableDataset):
             video_window_frames=self.video_window_frames,
             expected_hw=self.expected_hw,
             split=self.split,
-            holdout_ratio=self.holdout_ratio,
+            eval_ratio=self.eval_ratio,
             split_seed=self.seed # fixed at 123
         )
         for audio, video in rng:
@@ -236,7 +236,25 @@ def get_loader(batch_size, **data_kwargs):
     )
 
 
+def sanity_check():
+    source = '/workspace/dataset/source/'
+    encoded = '/workspace/dataset/encoded/'
+
+    train_ds = RandomAudioVideoFromMP4s(source, encoded, split='train')
+    eval_ds = RandomAudioVideoFromMP4s(source, encoded, split='eval')
+    
+    # Check if train and eval chunks overlap
+    train_chunks = {pair[1] for pair in iter(train_ds.pairs)}
+    eval_chunks = {pair[1] for pair in iter(eval_ds.pairs)}
+    overlapping = train_chunks & eval_chunks
+    
+    if overlapping:
+        print(f"Found {len(overlapping)} overlapping chunks between train and eval splits")
+    else:
+        print("No overlap between train and eval chunks")
+
 if __name__ == "__main__":
+    # sanity_check()
     import time
 
     loader = get_loader(

@@ -141,14 +141,14 @@ class AudioVideoTrainer(BaseTrainer):
             **self.train_cfg.data_kwargs,
         )
         
-        # create the holdout data loader
-        holdout_loader = get_loader(
+        # create the eval data loader
+        eval_loader = get_loader(
             self.train_cfg.data_id,
             self.train_cfg.n_samples, 
-            split='holdout',
+            split='eval',
             **self.train_cfg.data_kwargs,
         )
-        holdout_iter = cycle(holdout_loader)
+        eval_iter = cycle(eval_loader)
         
         local_step = 0
         for _ in range(self.train_cfg.epochs):
@@ -190,7 +190,7 @@ class AudioVideoTrainer(BaseTrainer):
                                     pass
                             pending_video_paths = []
                             
-                            _, cond_video = next(holdout_iter)
+                            _, cond_video = next(eval_iter)
                             cond_video = cond_video.bfloat16().cuda()
                             with ctx:
                                 audio_samples = audio_video_sample(

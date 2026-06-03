@@ -66,28 +66,36 @@ class VideoAudioRoPE(nn.Module):
     def __init__(self, config):
         super().__init__()
         dim_head = config.d_model // config.n_heads
-        self.rope = RotaryEmbedding(dim_head // 2, max_freq=32)
+        self.rope = RotaryEmbedding(dim_head // 2)
 
-        audio_freqs = self.rope(
-            torch.arange(config.window_length * config.sample_rate).float()
-            / config.sample_rate
-        )
-        video_freqs = self.rope(
-            torch.arange(config.window_length * config.video_sr).float()
-            / config.video_sr
-        )
+        n_audio = int(config.window_length * config.sample_rate)
+        n_video = int(config.window_length * config.video_sr)
 
-        self.register_buffer("audio_freqs", audio_freqs, persistent=False)
-        self.register_buffer("video_freqs", video_freqs, persistent=False)
+        # Token i spans [i/sr, (i+1)/sr), so midpoint is (i + 0.5) / sr.
+        audio_times = (torch.arange(n_audio).float() + 0.5) / config.sample_rate
+        video_times = (torch.arange(n_video).float() + 0.5) / config.video_sr
 
-    def apply(self, x, freqs):
+        # normalize to [0, 1] with window length
+        audio_pos = audio_times / config.window_length
+        video_pos = video_times / config.window_length 
+
+        # (T, D) -> convert to (cos, sin) pair expected by apply_rotary_emb
+        freqs = self.rope.freqs.unsqueeze(0) 
+        audio_angles = audio_pos.unsqueeze(-1) * freqs * 2 * torch.pi
+        video_angles = video_pos.unsqueeze(-1) * freqs * 2 * torch.pi
+
+        self.register_buffer("audio_angles", audio_angles, persistent=False)
+        self.register_buffer("video_angles", video_angles, persistent=False)
+
+    def apply(self, x, angles):
         orig_dtype = x.dtype
+        freqs = angles[:x.shape[2]]
         x = apply_rotary_emb(freqs.detach().float(), x.float(), seq_dim=2)
         return x.to(orig_dtype)
 
     def forward(self, q, k):
-        q = self.apply(q, self.audio_freqs)
-        k = self.apply(k, self.video_freqs)
+        q = self.apply(q, self.audio_angles)
+        k = self.apply(k, self.video_angles)
         return q, k
 
 def get_rope_cls(name):
