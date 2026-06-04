@@ -30,21 +30,15 @@ class AudioDiffusionCore(nn.Module):
 
         self.ts_embed = TimestepEmbedding(config.d_model)
 
-        # Video conditioning
-        video_patch_content = getattr(config, "video_patch_content", None)
-        if video_patch_content is not None:
-            self.video_proj = nn.Linear(video_patch_content, config.d_model)
-            self.null_video = nn.Parameter(torch.randn(config.d_model) * 0.02)
+        # text conditioning 
+        if config.d_text > 0:
+            self.text_proj = nn.Linear(config.d_text, config.d_model)
+            self.null_text = nn.Parameter(torch.randn(config.d_model) * 0.02)
         else:
-            self.video_proj = None
-            self.null_video = None
+            self.text_proj = None
+            self.null_text = None
 
-    def project_video(self, video):
-        """Raw [B, T_v, C, H, W] -> projected [B, T_v, d_model]."""
-        B, T_v, *_ = video.shape
-        return self.video_proj(video.reshape(B, T_v, -1))
-
-    def forward(self, x, ts, video=None, video_tokens=None, attn_mask=None):
+    def forward(self, x, ts, text_emb, text_mask=None):
         # x           : [B, C, T]
         # video       : [B, T_v, C_v, H_v, W_v] — raw, will be projected
         # video_tokens: [B, T_v, d_model]        — pre-projected, bypasses video_proj
@@ -54,21 +48,21 @@ class AudioDiffusionCore(nn.Module):
         x = eo.rearrange(x, 'b c (n_p p) -> b n_p (p c)', p=self.patch_size)
         x = self.proj_in(x)  # [B, n_p, d_model]
 
-        T_v = 0
-        if video_tokens is not None:
-            T_v = video_tokens.shape[1]
-            x = torch.cat([video_tokens, x], dim=1)
-        elif video is not None and self.video_proj is not None:
-            video_tokens = self.project_video(video)          # [B, T_v, d_model]
-            T_v = video_tokens.shape[1]
-            x = torch.cat([video_tokens, x], dim=1)
+        T_txt = 0
+        if text_emb is not None:
+            T_txt = text_emb.shape[1]
 
-        x = self.dit(x, cond, attn_mask)
+        text_tokens = self.text_proj(text_emb)  # [B, seq, D]
+        text_tokens = text_tokens * text_mask.unsqueeze(-1).float()
+        x = torch.cat([text_tokens, x], dim=1) # [B, seq+T, D]
+
+        x = self.dit(x, cond, attn_mask=None)
         x = self.norm_out(x, cond)
         x = self.proj_out(x)
 
-        if T_v > 0:
-            x = x[:, T_v:, :]                                # strip video prefix
+        # slice out only audio portion 
+        if T_txt > 0:
+            x = x[:, T_txt:, :]
 
         # Depatchify: [B, n_p, p*C] -> [B, C, n_p*p]
         x = eo.rearrange(x, 'b n_p (p c) -> b c (n_p p)', p=self.patch_size, c=self.channels)
@@ -100,7 +94,7 @@ class AudioDiffusionModel(nn.Module):
         ts = ts.sigmoid()
         return ts
 
-    def forward(self, x, video=None):
+    def forward(self, x, text_emb, text_mask):
         # x    : [B, C, T]
         # video: [B, T_v, C_v, H_v, W_v] or None
         with torch.no_grad():
@@ -117,15 +111,14 @@ class AudioDiffusionModel(nn.Module):
                 z = (1. - ts_exp) * x + ts_exp * eps
                 target = eps - x
 
-        # Project video once, then optionally swap for null tokens (CFG dropout)
-        video_tokens = None
-        if video is not None and self.core.video_proj is not None:
-            video_tokens = self.core.project_video(video)    # [B, T_v, d_model]
+        text_tokens = None
+        if text_emb is not None and self.core.text_proj is not None:
+            text_tokens = self.core.text_proj(text_emb)    # [B, seq, d_model]
             if self.training and torch.rand(1).item() < self.cfg_prob:
-                B, T_v = video_tokens.shape[:2]
-                video_tokens = self.core.null_video[None, None, :].expand(B, T_v, -1)
+                B, T_txt = text_tokens.shape[:2]
+                text_tokens = self.core.null_text[None, None, :].expand(B, T_txt, -1)
 
-        pred = self.core(z, ts, video_tokens=video_tokens)
+        pred = self.core(z, ts, text_emb, text_mask)
         if self.x0_mode:
             pred = (pred - z) / den
 

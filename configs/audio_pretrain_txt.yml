@@ -4,7 +4,8 @@ model:
   n_layers: 28
   n_heads: 24
   d_model: 1536
-  d_text: 0           # unused, satisfies ModelConfig
+  d_text: 768         # T5 embed dim
+  text_encoder: t5-base
   channels: 64        # stable audio VAE latent channels
   patch_size: 1       # over latent frames
   sample_size: [1, 1] # unused, satisfies ModelConfig
@@ -19,7 +20,7 @@ train:
   data_id: audio_dir_loader
   data_kwargs:
     source: /path/to/your/mp4/dataset
-    window_length: 20.0
+    window_length: 10.0
     sample_rate: 44100  # raw audio SR for the data loader
   target_batch_size: 256
   batch_size: 32
@@ -37,6 +38,7 @@ train:
       - core.proj_out
       - core.norm_out
       - core.ts_embed
+      - core.text_proj
       - .adaln1
       - .adaln2
       - .gate1
@@ -47,7 +49,10 @@ train:
   save_interval: 5000
   sampler_id: audio
   sampling_steps: 50
+  cfg_scale: 1.5
   n_samples: 8
+  vae_id: stable_audio
+  
 
 wandb:
   name: your_wandb_entity

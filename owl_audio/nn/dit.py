@@ -13,6 +13,7 @@ class DiTBlock(nn.Module):
     """
     def __init__(self, config):
         super().__init__()
+        d_text = config.d_text    
 
         self.attn = Attn(config)
         self.mlp = MLP(
@@ -24,9 +25,14 @@ class DiTBlock(nn.Module):
         self.adaln2 = AdaLN(config)
         self.gate2 = Gate(config)
 
-        self.cross_attn = CrossAttn(config)
-        self.adaln_cross = AdaLN(config)
-        self.gate_cross = Gate(config)
+        if d_text > 0:
+            self.cross_attn = CrossAttn(config)
+            self.adaln_cross = AdaLN(config)
+            self.gate_cross = Gate(config)
+        else:
+            self.cross_attn = None
+            self.adaln_cross = None
+            self.gate_cross = None
     
     def forward(self, x, cond, attn_mask, video_tokens):
         # x : [b,n*p,d]
@@ -40,7 +46,7 @@ class DiTBlock(nn.Module):
         x = self.gate1(x, cond)
         x = res1 + x
 
-        if video_tokens is not None:
+        if video_tokens is not None and self.cross_attn is not None:
             res = x.clone()
             x = self.adaln_cross(x, cond)
             x = self.cross_attn(x, video_tokens)

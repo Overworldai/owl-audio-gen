@@ -15,6 +15,8 @@ class ModelConfig:
     d_model: int
     d_text: int
     video_patch_content: int
+
+    sample_rate: float
     
     channels: int
     patch_size: Tuple[int, int]

@@ -235,7 +235,6 @@ def get_loader(batch_size, **data_kwargs):
         multiprocessing_context="spawn",
     )
 
-
 def sanity_check():
     source = '/workspace/dataset/source/'
     encoded = '/workspace/dataset/encoded/'

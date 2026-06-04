@@ -7,7 +7,10 @@ import torch
 import wandb
 from ema_pytorch import EMA
 from torch.nn.parallel import DistributedDataParallel as DDP
-from diffusers import StableAudioPipeline
+from itertools import cycle
+
+from ..models.vae_wrapper import load_audio_vae, encode_audio, decode_audio
+from transformers import T5EncoderModel, T5Tokenizer
 
 from .base import BaseTrainer
 from ..models.audio import AudioDiffusionModel
@@ -37,16 +40,57 @@ class AudioTrainer(BaseTrainer):
         # Latent length derived entirely from model config
         self.latent_t = int(self.model_cfg.window_length * self.model_cfg.sample_rate)
 
-        # Load VAE — keep only the VAE, discard rest of the pipeline
+        # Load Audio VAE
+        self.vae_id = getattr(self.train_cfg, "vae_id", "stable_audio")
+        self.raw_audio_sr = getattr(self.train_cfg.data_kwargs, "sample_rate", 44100)
+
         if self.rank == 0:
-            print("Loading Stable Audio VAE...")
-        pipe = StableAudioPipeline.from_pretrained(
-            "stabilityai/stable-audio-open-1.0", torch_dtype=torch.float16
+            print(f"Loading {self.vae_id} Audio VAE...")
+
+        self.vae = load_audio_vae(
+            vae_id=self.vae_id, 
+            sample_rate=self.raw_audio_sr, 
+            latent_sr=self.model_cfg.sample_rate, 
+            window_length=self.model_cfg.window_length
         )
-        self.vae = pipe.vae
-        # Raw audio SR that the VAE expects (44100 for Stable Audio)
-        self.raw_audio_sr = self.vae.config.sampling_rate
-        del pipe
+
+        # Optionally: load text encoder
+        if self.model_cfg.d_text > 0:
+            text_encoder = getattr(self.model_cfg, "text_encoder", "t5-base")
+            # In distributed training, each rank keeps its own inference-only copy.
+            # Warm cache on rank 0 first to avoid concurrent first-time downloads.
+            if self.world_size > 1 and self.rank == 0:
+                _ = T5Tokenizer.from_pretrained(text_encoder)
+                _ = T5EncoderModel.from_pretrained(text_encoder)
+            if self.world_size > 1:
+                self.barrier()
+
+            self.tokenizer = T5Tokenizer.from_pretrained(text_encoder)
+            self.text_encoder = T5EncoderModel.from_pretrained(text_encoder).to(self.device).bfloat16().eval()
+
+    @torch.no_grad()
+    def encode(self, raw_audio):
+        latents = encode_audio(self.vae, raw_audio)
+        return latents[..., :self.latent_t]
+
+    @torch.no_grad()
+    def decode(self, latents):
+        return decode_audio(self.vae, latents)
+
+    @torch.no_grad()
+    def encode_text(self, text):
+        # text: List[str], length B
+        tokens = self.tokenizer(
+            text,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=128
+        ).to(self.device)
+
+        hidden = self.text_encoder(**tokens).last_hidden_state  # [B, seq, d_text]
+        mask = tokens["attention_mask"].unsqueeze(-1).float()
+        return hidden, mask
 
     def save(self):
         save_dict = {
@@ -72,24 +116,8 @@ class AudioTrainer(BaseTrainer):
             self.scheduler.load_state_dict(save_dict["scheduler"])
         self.total_step_counter = save_dict["total_step_counter"]
 
-    @torch.no_grad()
-    def encode(self, raw_audio):
-        """raw_audio: [B, 2, T_raw] bfloat16  →  [B, C, latent_t] bfloat16"""
-        latents = self.vae.encode(raw_audio).latent_dist.sample()
-        return latents[..., :self.latent_t]
-
-    @torch.no_grad()
-    def decode(self, latents):
-        """latents: [B, C, latent_t] bfloat16  →  [B, 2, T_raw] bfloat16"""
-        return self.vae.decode(latents).sample
-
     def train(self):
         torch.cuda.set_device(self.local_rank)
-
-        # VAE — frozen, compiled, bf16
-        self.vae = self.vae.cuda().bfloat16().eval()
-        self.vae.encode = torch.compile(self.vae.encode)
-        self.vae.decode = torch.compile(self.vae.decode)
 
         self.model = self.model.cuda().train()
         if self.world_size > 1:
@@ -127,22 +155,32 @@ class AudioTrainer(BaseTrainer):
         if self.rank == 0:
             wandb.watch(self.get_module(), log="all")
 
-        loader = get_loader(
+        train_loader = get_loader(
             self.train_cfg.data_id,
             self.train_cfg.batch_size,
+            split='train',
             **self.train_cfg.data_kwargs,
         )
         n_samples = getattr(self.train_cfg, "n_samples", 2)
 
+        eval_loader = get_loader(
+            self.train_cfg.data_id,
+            batch_size=n_samples,
+            split='eval',
+            **self.train_cfg.data_kwargs,
+        )
+        eval_iter = cycle(eval_loader)
+
         local_step = 0
         for _ in range(self.train_cfg.epochs):
-            for raw_audio in loader:
+            for raw_audio, caption in train_loader:
                 # raw_audio: [B, 2, T_raw] — encode on-the-fly
                 raw_audio = raw_audio.to(self.device).bfloat16()
                 latents = self.encode(raw_audio)  # [B, C, latent_t]
+                text_emb, text_mask = self.encode_text(caption)
 
                 with ctx:
-                    loss = self.model(latents) / accum_steps
+                    loss = self.model(latents, text_emb, text_mask) / accum_steps
                 metrics.log("loss", loss)
 
                 self.scaler.scale(loss).backward()
@@ -166,9 +204,16 @@ class AudioTrainer(BaseTrainer):
                         timer.reset()
 
                         if self.total_step_counter % self.train_cfg.sample_interval == 0:
+
+                            cond_audio, cond_caption = next(eval_iter)
+                            cond_audio = cond_audio.to(self.device).bfloat16()
+                            cond_text_emb, cond_text_mask = self.encode_text(cond_caption)
                             with ctx:
                                 latent_samples = audio_sample(
                                     self.get_module(ema=True).core,
+                                    text_emb=cond_text_emb,
+                                    text_mask=cond_text_mask,
+                                    cfg_scale=self.train_cfg.cfg_scale,
                                     shape=(n_samples, self.model_cfg.channels, self.latent_t),
                                     steps=self.train_cfg.sampling_steps,
                                     device=self.device,
@@ -176,6 +221,12 @@ class AudioTrainer(BaseTrainer):
                                 )
                             decoded = self.decode(latent_samples)  # [B, 2, T_raw]
                             wandb_dict["samples"] = audio_to_wandb(decoded, self.raw_audio_sr)
+
+                            # compute eval loss
+                            cond_latents = self.encode(cond_audio)
+                            with ctx:
+                                eval_loss = self.model(cond_latents, cond_text_emb, cond_text_mask)
+                            wandb_dict["eval_loss"] = eval_loss
 
                         if self.rank == 0:
                             wandb.log(wandb_dict)
