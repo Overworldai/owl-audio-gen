@@ -13,7 +13,7 @@ from itertools import cycle
 
 from .base import BaseTrainer
 from ..models import get_model_cls
-from ..models.vae_wrapper import VAEWrapper
+from ..modules.vae_wrapper import VAEWrapper
 from ..sampling.audio_video import audio_video_sample
 from ..data import get_loader
 from ..muon import init_muon

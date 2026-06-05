@@ -1,33 +1,36 @@
 model:
   model_id: audio
   rope_cls: audio
-  n_layers: 28
-  n_heads: 24
-  d_model: 1536
-  d_text: 768         # T5 embed dim
-  text_encoder: t5-base
+  n_layers: 24
+  n_heads: 16
+  d_model: 1024
+  d_text: 0         # T5 embed dim
+  # text_encoder: t5-base
   channels: 64        # stable audio VAE latent channels
   patch_size: 1       # over latent frames
   sample_size: [1, 1] # unused, satisfies ModelConfig
   window_length: 10.0 # seconds of audio per sample
-  sample_rate: 21.2   # latent fps (44100 / VAE compression ratio ~2075)
+  sample_rate: 25  # latent fps (44100 / VAE compression ratio ~2075)
+  video_sr: 7.5       # video latent fps
   x0_mode: False
   noise_scale: 1.0
   mlp_ratio: 4
+  video_patch_content: 0
+  cfg_prob: 0.1
 
 train:
   trainer_id: audio
   data_id: audio_dir_loader
   data_kwargs:
-    source: /path/to/your/mp4/dataset
+    source: /workspace/dataset/source/
     window_length: 10.0
-    sample_rate: 44100  # raw audio SR for the data loader
-  target_batch_size: 256
-  batch_size: 32
+    sample_rate: 48000  # raw audio SR for the data loader
+  target_batch_size: 128
+  batch_size: 12
   epochs: 1000
   opt: Muon
   opt_kwargs:
-    lr: 1.0e-5
+    lr: 5.0e-5
     momentum: 0.95
     adamw_lr: 1.0e-4
     adamw_wd: 1.0e-2
@@ -38,7 +41,8 @@ train:
       - core.proj_out
       - core.norm_out
       - core.ts_embed
-      - core.text_proj
+      # - core.text_proj
+      # - core.video_proj
       - .adaln1
       - .adaln2
       - .gate1
@@ -50,11 +54,11 @@ train:
   sampler_id: audio
   sampling_steps: 50
   cfg_scale: 1.5
-  n_samples: 8
-  vae_id: stable_audio
+  n_samples: 1
+  vae_id: ace-step1.5
   
 
 wandb:
-  name: your_wandb_entity
+  name: its-nmt05
   project: owl-audio-gen
-  run_name: audio-baseline
+  run_name: audio-pretrain-ace-step1.5

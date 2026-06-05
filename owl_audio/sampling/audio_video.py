@@ -5,7 +5,7 @@ from .schedulers import get_sd3_euler
 
 
 @torch.no_grad()
-def audio_video_sample(model, shape, video, steps, device, dtype,
+def audio_video_sample(model, shape, video, text_emb, steps, device, dtype,
                        cfg_scale=1.5, progress_bar=True):
     """
     CFG flow-matching sampler for video-conditioned audio.
@@ -19,14 +19,17 @@ def audio_video_sample(model, shape, video, steps, device, dtype,
 
     # Project video once — reused every step
     video_tokens = model.project_video(video.to(device=device, dtype=dtype))  # [B, T_v, d_model]
-    null_tokens = model.null_video[None, None, :].expand_as(video_tokens)
+    null_video = model.null_video[None, None, :].expand_as(video_tokens)
+
+    text_tokens = model.text_proj(text_emb.to(device=device, dtype=dtype))  # [B, seq, d_model]
+    null_text = model.null_video[None, None, :].expand_as(text_tokens)
 
     use_cfg = cfg_scale != 1.0
 
     for dt in tqdm(get_sd3_euler(steps).to(device=device, dtype=dtype), disable=not progress_bar):
-        cond_pred = model(x, ts, video_tokens=video_tokens)
+        cond_pred = model(x, ts, video_tokens=video_tokens, text_tokens=text_tokens)
         if use_cfg:
-            uncond_pred = model(x, ts, video_tokens=null_tokens)
+            uncond_pred = model(x, ts, video_tokens=null_video, text_tokens=null_text)
             pred = uncond_pred + cfg_scale * (cond_pred - uncond_pred)
         else:
             pred = cond_pred

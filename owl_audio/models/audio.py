@@ -38,31 +38,33 @@ class AudioDiffusionCore(nn.Module):
             self.text_proj = None
             self.null_text = None
 
-    def forward(self, x, ts, text_emb, text_mask=None):
+        # video conditioning 
+        if config.video_patch_content > 0:
+            self.video_proj = nn.Linear(config.d_text, config.d_model)
+            self.null_video = nn.Parameter(torch.randn(config.d_model) * 0.02)
+        else:
+            self.video_proj = None
+            self.null_video = None
+    
+    def project_video(self, video):
+        """Raw [B, T_v, C, H, W] -> projected [B, T_v, d_model]."""
+        B, T_v, *_ = video.shape
+        return self.video_proj(video.reshape(B, T_v, -1))
+
+    def forward(self, x, ts, video_tokens=None, text_tokens=None, attn_mask=None):
         # x           : [B, C, T]
         # video       : [B, T_v, C_v, H_v, W_v] — raw, will be projected
         # video_tokens: [B, T_v, d_model]        — pre-projected, bypasses video_proj
+        # text_tokens : [B, T_txt, d_model]
         cond = self.ts_embed(ts)
 
         # Patchify audio: [B, C, n_p*p] -> [B, n_p, p*C]
         x = eo.rearrange(x, 'b c (n_p p) -> b n_p (p c)', p=self.patch_size)
         x = self.proj_in(x)  # [B, n_p, d_model]
 
-        T_txt = 0
-        if text_emb is not None:
-            T_txt = text_emb.shape[1]
-
-        text_tokens = self.text_proj(text_emb)  # [B, seq, D]
-        text_tokens = text_tokens * text_mask.unsqueeze(-1).float()
-        x = torch.cat([text_tokens, x], dim=1) # [B, seq+T, D]
-
-        x = self.dit(x, cond, attn_mask=None)
+        x = self.dit(x, cond, video_tokens, text_tokens, attn_mask)
         x = self.norm_out(x, cond)
         x = self.proj_out(x)
-
-        # slice out only audio portion 
-        if T_txt > 0:
-            x = x[:, T_txt:, :]
 
         # Depatchify: [B, n_p, p*C] -> [B, C, n_p*p]
         x = eo.rearrange(x, 'b n_p (p c) -> b c (n_p p)', p=self.patch_size, c=self.channels)
@@ -94,9 +96,10 @@ class AudioDiffusionModel(nn.Module):
         ts = ts.sigmoid()
         return ts
 
-    def forward(self, x, text_emb, text_mask):
+    def forward(self, x, video=None, text_emb=None):
         # x    : [B, C, T]
         # video: [B, T_v, C_v, H_v, W_v] or None
+        # text_emb: [B, T_txt, d_text] or None
         with torch.no_grad():
             ts = self.sample_timesteps(x.shape[0], x.device, x.dtype)
             eps = torch.randn_like(x) * self.noise_scale
@@ -111,14 +114,31 @@ class AudioDiffusionModel(nn.Module):
                 z = (1. - ts_exp) * x + ts_exp * eps
                 target = eps - x
 
+        # Get text tokens from text_emb
         text_tokens = None
         if text_emb is not None and self.core.text_proj is not None:
-            text_tokens = self.core.text_proj(text_emb)    # [B, seq, d_model]
-            if self.training and torch.rand(1).item() < self.cfg_prob:
-                B, T_txt = text_tokens.shape[:2]
-                text_tokens = self.core.null_text[None, None, :].expand(B, T_txt, -1)
+            text_tokens = self.core.text_proj(text_emb)    # [B, T_txt, d_model]
 
-        pred = self.core(z, ts, text_emb, text_mask)
+        # Project video once
+        video_tokens = None
+        if video is not None and self.core.video_proj is not None:
+            video_tokens = self.core.project_video(video)    # [B, T_v, d_model]
+      
+        # Optionally swap for null tokens (CFG dropout)
+        if self.training:
+            if video_tokens is not None:
+                B, T_v = video_tokens.shape[:2]
+                video_drop = torch.rand(B, device=video_tokens.device) < self.cfg_prob[:, None, None]
+                null_video = self.core.null_video[None, None, :].expand(B, T_v, -1)
+                video_tokens = torch.where(video_drop, null_video, video_tokens)
+
+            if text_tokens is not None:
+                B, T_txt = text_tokens.shape[:2]
+                text_drop  = torch.rand(B, device=text_tokens.device)  < self.cfg_prob[:, None, None]
+                null_text = self.core.null_text[None, None, :].expand(B, T_txt, -1) 
+                text_tokens = torch.where(text_drop, null_text, text_tokens)
+
+        pred = self.core(z, ts, video_tokens, text_tokens)
         if self.x0_mode:
             pred = (pred - z) / den
 

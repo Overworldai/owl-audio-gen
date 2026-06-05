@@ -93,8 +93,36 @@ class Attn(nn.Module):
         x_out = eo.rearrange(x_out, 'b h n d -> b n (h d)')
         return self.out(x_out)
 
-
 class CrossAttn(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+
+        d_model = config.d_model
+        n_heads = config.n_heads
+
+        self.dim = d_model // n_heads
+        self.n_heads = n_heads
+
+        self.q = nn.Linear(d_model, d_model, bias = False)
+        self.kv = nn.Linear(d_model, 2 * d_model, bias = False)
+        self.out = nn.Linear(d_model, d_model)
+
+        self.qk_norm = QKNorm(self.dim)
+
+    def forward(self, x, cond, attn_mask=None):
+        # x: [B, T_a, d_model]
+        # cond: [B, T_txt, d_model]
+        # attn_mask: [B, T_txt]
+        q = eo.rearrange(self.q(x), 'b n (h d) -> b h n d', d = self.dim)
+        k,v = eo.rearrange(self.kv(cond), 'b n (two h d) -> two b h n d', two = 2, d = self.dim)
+        q,k = self.qk_norm(q,k)
+        
+        attn_mask = attn_mask[:, None, None, :].bool()
+        x_out = F.scaled_dot_product_attention(q,k,v, attn_mask=attn_mask)
+        x_out = eo.rearrange(x_out, 'b h n d -> b n (h d)')
+        return self.out(x_out)
+
+class CrossAttnVid(nn.Module):
     """Cross attn on video tokens with RoPE temporal alignemnt"""
     def __init__(self, config):
         super().__init__()
