@@ -62,7 +62,7 @@ class DiTBlock(nn.Module):
             x = self.gate_cross_video(x, cond)
             x = res2 + x
 
-        if text_tokens is not None and self.cross_attn is not None:
+        if text_tokens is not None and self.cross_attn_text is not None:
             res3 = x.clone()
             x = self.adaln_cross_text(x, cond)
             x = self.cross_attn_text(x, text_tokens)

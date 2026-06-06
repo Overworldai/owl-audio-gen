@@ -11,6 +11,8 @@ from ema_pytorch import EMA
 from torch.nn.parallel import DistributedDataParallel as DDP
 from itertools import cycle
 
+from transformers import T5EncoderModel, AutoTokenizer
+
 from .base import BaseTrainer
 from ..models import get_model_cls
 from ..modules.vae_wrapper import load_audio_vae, encode_audio, decode_audio
@@ -73,10 +75,14 @@ class FineVideoTrainer(BaseTrainer):
         # load text encoder
         if self.model_cfg.d_text > 0:
             text_encoder = getattr(self.model_cfg, "text_encoder", "t5-base")
-            self.text_encoder = RichTextEncoder(
-                base_encoder_name=text_encoder, 
-                d_text=self.model_cfg.d_text
-            ).to(self.device)
+            self.text_encoder = T5EncoderModel.from_pretrained(
+                text_encoder,
+                output_hidden_states=True
+            ).to(self.device).bfloat16()
+            self.tokenizer = AutoTokenizer.from_pretrained(text_encoder)
+        else:
+            self.text_encoder = None
+            self.tokenizer = None
 
     @torch.no_grad()
     def encode(self, raw_audio):
@@ -87,11 +93,14 @@ class FineVideoTrainer(BaseTrainer):
     def decode(self, latents):
         return decode_audio(self.vae, latents)
 
+    @torch.no_grad()
     def encode_text(self, text):
         # text: List[str], length B
-        tokens = self.text_encoder.tokenize(text, device=self.device)
-        text_emb = self.text_encoder(tokens['input_ids'], tokens['attention_mask'])
-        return text_emb # [B, T_txt, d_text]
+        tokens = self.tokenizer(text, return_tensors='pt', padding=True, truncation=True)
+        input_ids = tokens['input_ids'].to(self.device)
+        attention_mask = tokens['attention_mask'].to(self.device)
+        outputs = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=False)
+        return outputs.last_hidden_state  # [B, T_txt, d_text]
 
     def save(self):
         save_dict = {
@@ -122,14 +131,13 @@ class FineVideoTrainer(BaseTrainer):
 
         if self.video_vae_id == "taehv":
             from taehv.taehv import TAEHV
-            _taehv = TAEHV(self.video_vae_ckpt).cuda().bfloat16().eval()
-            self.video_encode_fn = lambda x: _taehv.encode_video(x)
+            _taehv = TAEHV(self.video_vae_ckpt).to(self.device).bfloat16().eval()
+            self.video_encode_fn = lambda x: _taehv.encode_video(x, show_progress_bar=False)
             self.video_decode_fn = lambda x: _video_self_pad(_taehv.decode_video)(x).clamp(0, 1)
 
         self.model = self.model.cuda().train()
         if self.world_size > 1:
             self.model = DDP(self.model)
-            # self.model = DDP(self.model, find_unused_parameters=True)
 
         self.ema = EMA(self.model, beta=0.999, update_after_step=0, update_every=1)
 
@@ -178,14 +186,16 @@ class FineVideoTrainer(BaseTrainer):
         
         local_step = 0
         for _ in range(self.train_cfg.epochs):
-            for raw_audio, video_latents in train_loader:
+            for raw_audio, video, caption in train_loader:
                 raw_audio = raw_audio.to(self.device).bfloat16()
-                video_latents = video_latents.to(self.device).bfloat16()
+                video = video.to(self.device).bfloat16()
 
                 audio_latents = self.encode(raw_audio)   # [B, C, latent_t]
+                video_latents = self.video_encode_fn(video)
+                text_emb = self.encode_text(caption) if self.text_encoder else None
 
                 with ctx:
-                    loss = self.model(audio_latents, video=video_latents) / accum_steps
+                    loss = self.model(audio_latents, video=video_latents, text_emb=text_emb) / accum_steps
                 metrics.log("loss", loss)
 
                 self.scaler.scale(loss).backward()
@@ -216,16 +226,19 @@ class FineVideoTrainer(BaseTrainer):
                                     pass
                             pending_video_paths = []
                             
-                            cond_audio, cond_video = next(eval_iter)
+                            cond_audio, cond_video, cond_caption = next(eval_iter)
                             cond_audio = cond_audio.to(self.device).bfloat16()
+                            cond_video = cond_video.to(self.device).bfloat16()
                             cond_latents = self.encode(cond_audio)
-                            cond_video = cond_video.bfloat16().to(self.device)
+                            cond_video = self.video_encode_fn(cond_video)
+                            cond_text_emb = self.encode_text(cond_caption) if self.text_encoder else None
+
                             with ctx:
                                 audio_samples = audio_video_sample(
                                     self.get_module(ema=True).core,
                                     shape=(n_samples, self.model_cfg.channels, self.latent_t),
                                     video=cond_video[:n_samples],
-                                    text_emb=None,
+                                    text_emb=cond_text_emb[:n_samples],
                                     steps=self.train_cfg.sampling_steps,
                                     device=self.device,
                                     dtype=torch.bfloat16,
@@ -248,7 +261,7 @@ class FineVideoTrainer(BaseTrainer):
                             # compute eval loss
                             with torch.no_grad():
                                 with ctx:
-                                    eval_loss = self.model(cond_latents, video=cond_video)
+                                    eval_loss = self.model(cond_latents, video=cond_video, text_emb=text_emb)
                             wandb_dict["eval_loss"] = eval_loss
 
                         if self.rank == 0:

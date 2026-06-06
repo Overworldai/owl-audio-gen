@@ -117,7 +117,9 @@ class CrossAttn(nn.Module):
         k,v = eo.rearrange(self.kv(cond), 'b n (two h d) -> two b h n d', two = 2, d = self.dim)
         q,k = self.qk_norm(q,k)
         
-        attn_mask = attn_mask[:, None, None, :].bool()
+        if attn_mask is not None:
+            attn_mask = attn_mask[:, None, None, :].bool()
+
         x_out = F.scaled_dot_product_attention(q,k,v, attn_mask=attn_mask)
         x_out = eo.rearrange(x_out, 'b h n d -> b n (h d)')
         return self.out(x_out)

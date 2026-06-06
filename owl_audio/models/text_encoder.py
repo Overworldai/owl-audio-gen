@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoModel, AutoTokenizer
+from transformers import T5EncoderModel, AutoTokenizer
 
 
 class RMSNorm(nn.Module):
@@ -13,7 +13,6 @@ class RMSNorm(nn.Module):
     def forward(self, x: torch.Tensor):
         norm = x.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
         return x * norm * self.scale
-
 
 class FeedForward(nn.Module):
     def __init__(self, dim: int, mult: int = 4, dropout: float = 0.0):
@@ -29,7 +28,6 @@ class FeedForward(nn.Module):
 
     def forward(self, x):
         return self.net(x)
-
 
 class BidirectionalAttention(nn.Module):
     def __init__(self, dim: int, num_heads: int = 8, dropout: float = 0.0):
@@ -58,11 +56,10 @@ class BidirectionalAttention(nn.Module):
         attn = self.dropout(F.softmax(attn, dim=-1))
         out  = torch.matmul(attn, v).transpose(1, 2).reshape(B, T, D)
         return self.out_proj(out)
-    
 
 class MultiLayerAggregator(nn.Module):
     """Collapses all T5 hidden layers into a single rich embedding per token"""
-    def __init__(self, int, num_layers: int, hidden_dim: int = 32):
+    def __init__(self, num_layers: int, hidden_dim: int = 32):
         super().__init__()
         self.num_layers = num_layers
         self.layer_mixer = nn.Sequential(
@@ -96,7 +93,6 @@ class EnricherBlock(nn.Module):
         x = x + self.ff(x)
         return x
 
-
 class FeatureEnricher(nn.Module):
     """Lightweight bidirectional transformer that 
     refines the aggregated multi-layer embeddings"""
@@ -109,8 +105,6 @@ class FeatureEnricher(nn.Module):
         dropout: float = 0.0,
     ):
         super().__init__()
-        output_dim = output_dim or dim
-
         self.blocks = nn.ModuleList([
             EnricherBlock(dim, num_heads, ff_mult, dropout)
             for _ in range(num_layers)
@@ -129,7 +123,6 @@ class FeatureEnricher(nn.Module):
 
         return self.norm(x)  # [B, T, dim]
 
-
 class RichTextEncoder(nn.Module):
     def __init__(
         self,
@@ -141,7 +134,7 @@ class RichTextEncoder(nn.Module):
     ):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained(base_encoder_name)
-        self.base_encoder = AutoEncoderModel.from_pretrained(
+        self.base_encoder = T5EncoderModel.from_pretrained(
             base_encoder_name,
             output_hidden_states=True,
         )
@@ -149,7 +142,7 @@ class RichTextEncoder(nn.Module):
             p.requires_grad_(False)
 
         encoder_layers = self.base_encoder.config.num_layers
-        self.aggregator = MultiLayerAggregator(encoder_layers)
+        self.aggregator = MultiLayerAggregator(num_layers=encoder_layers)
         self.enricher = FeatureEnricher(
             dim=d_text,
             num_layers=num_enricher_layers,

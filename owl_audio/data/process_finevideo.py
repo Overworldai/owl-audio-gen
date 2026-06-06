@@ -137,9 +137,9 @@ def chunk_single_video(mp4: Path, chunks_dir: Path, window_length: float,
  
         if not out_mp4.exists():
             vf = f"scale={video_size[0]}:{video_size[1]}"
-            subprocess.run(
+            result = subprocess.run(
                 [
-                    "ffmpeg", "-y", "-ss", str(start), "-t", str(end - start),
+                    "ffmpeg", "-y", "-i", str(mp4), "-ss", str(start), "-t", str(end - start),
                     "-i", str(mp4),
                     "-vf", vf, "-r", str(video_fps),
                     "-c:v", "libx264", "-preset", "fast", "-crf", "23",
@@ -149,6 +149,9 @@ def chunk_single_video(mp4: Path, chunks_dir: Path, window_length: float,
                 capture_output=True,
                 timeout=600
             )
+
+            if result.returncode != 0:
+                raise RuntimeError(f"ffmpeg failed for {mp4}:\n{result.stderr.decode()}")
  
         records.append({
             "chunk_id": chunk_id,

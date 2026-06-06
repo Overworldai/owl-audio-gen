@@ -30,7 +30,7 @@ train:
     eval_ratio: 0.1
     video_size: [640, 320]  # approx. 360p  
   target_batch_size: 128
-  batch_size: 10
+  batch_size: 6
   epochs: 1000
   opt: Muon
   opt_kwargs:
@@ -46,6 +46,7 @@ train:
       - core.norm_out
       - core.ts_embed
       - core.video_proj
+      - core.text_proj
       - .adaln1
       - .adaln2
       - .gate1
@@ -68,4 +69,4 @@ train:
 wandb:
   name: its-nmt05
   project: owl-audio-gen
-  run_name: audio-ace-step1.5-video
+  run_name: audio-finevideo-acestep
