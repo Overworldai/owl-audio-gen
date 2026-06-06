@@ -57,6 +57,7 @@ class TrainingConfig:
     sampling_steps: int = 20
     cfg_scale: float = 1.5
     vae_id: Optional[str] = None
+    video_size: Optional[Tuple[int, int]] = None
 
 @dataclass
 class WANDBConfig:

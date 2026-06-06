@@ -31,7 +31,7 @@ def _video_self_pad(fn, p=1, q=4):
     return wrapper
 
 
-class AudioVideoTrainer(BaseTrainer):
+class FineVideoTrainer(BaseTrainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -148,8 +148,6 @@ class AudioVideoTrainer(BaseTrainer):
         )
         self.scaler = torch.amp.GradScaler()
         ctx = torch.amp.autocast(f"cuda:{self.local_rank}", torch.bfloat16)
-
-        self.load()
 
         timer = Timer()
         timer.reset()

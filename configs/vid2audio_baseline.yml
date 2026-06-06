@@ -1,5 +1,5 @@
 model:
-  model_id: vid2audio
+  model_id: audio
   rope_cls: audio
   n_layers: 16
   n_heads: 16
@@ -9,7 +9,7 @@ model:
   patch_size: 1       # over latent frames
   sample_size: [1, 1] # unused, satisfies ModelConfig
   window_length: 10.0
-  sample_rate: 21.2   # audio latent fps
+  sample_rate: 25     # audio latent fps
   video_sr: 7.5       # video latent fps
   x0_mode: False
   noise_scale: 1.0
@@ -24,16 +24,16 @@ train:
     source: /workspace/dataset/source/
     encoded: /workspace/dataset/encoded/
     window_length: 10.0
-    sample_rate: 44100
+    sample_rate: 48000
     video_window_frames: 300
     expected_hw: [20, 40]
-    holdout_ratio: 0.1
+    eval_ratio: 0.1
   target_batch_size: 128
-  batch_size: 32
+  batch_size: 10
   epochs: 1000
   opt: Muon
   opt_kwargs:
-    lr: 1.0e-5
+    lr: 5.0e-5
     momentum: 0.95
     adamw_lr: 1.0e-4
     adamw_wd: 1.0e-2
@@ -51,21 +51,21 @@ train:
       - .gate2
       - .adaln_cross
       - .gate_cross
-  checkpoint_dir: checkpoints/vid2audio_baseline
+  checkpoint_dir: checkpoints/vid2audio_baseline-acestep1.5
   resume_ckpt: null
   sample_interval: 200
   save_interval: 5000
   sampler_id: audio_video
   sampling_steps: 50
   cfg_scale: 1.5
-  n_samples: 2
+  n_samples: 1
   video_vae_id: taehv
   video_vae_ckpt: /workspace/owl-audio-gen/taehv/taehv1_5.pth
   video_fps: 30
   video_size: [640, 320]  # approx. 360p
-  vae_id: stable_audio    # audio VAE id
+  vae_id: ace-step1.5    # audio VAE id
 
 wandb:
   name: its-nmt05
   project: owl-audio-gen
-  run_name: audio-baseline
+  run_name: audio-ace-step1.5-video

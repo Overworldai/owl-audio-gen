@@ -5,8 +5,6 @@ from einops import rearrange
 from dataclasses import dataclass
 from typing import Optional
 
-from ..modules.mmaudio.features_utils import FeaturesUtils
-
 @dataclass
 class VAEWrapperState:
     vae_id: str
@@ -73,6 +71,7 @@ def load_audio_vae(vae_id, sample_rate, latent_sr, window_length, device):
         wrapper_state.vocoder_sr = wrapper_state.vocoder.config.output_sampling_rate
         wrapper_state.latent_ch = wrapper_state.vae.config.latent_channels
     elif vae_id == 'mmaudio':
+        from ..modules.mmaudio.features_utils import FeaturesUtils
         # the model wights must be already loaded beforehand
         wrapper_state.vae = FeaturesUtils(
             tod_vae_ckpt='/workspace/model_weights/MMAUDIO/v1-44.pth',

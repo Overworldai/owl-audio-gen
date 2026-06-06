@@ -1,182 +1,275 @@
-import argparse
-import json
-import subprocess
-import sys
+import random, json
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+import hashlib
+import numpy as np
 
+import torch
+import torch.nn.functional as F
+from torch.utils.data import IterableDataset, DataLoader, get_worker_info
+from torchaudio.transforms import Resample
+import av
 
-def _load_jsonl(path: Path) -> List[Dict]:
-    with open(path, "r", encoding="utf-8") as f:
-        return [json.loads(l) for l in f if l.strip()]
+class FineVideoLoader:
+    """Loads videos from FineVideo (to be used with IterableDataset)"""
+    def __init__(self, source, seed=None,
+                 window_length=10.0, sample_rate=44100,
+                 video_window_frames=75, expected_hw=(16, 32),
+                 video_size=(640, 320), video_fps=30.0, 
+                 split='train', eval_ratio=0.1, split_seed=123):
+        super().__init__()
+        self.source = source
+        self.seed = seed
+        self.window_length = window_length
+        self.sample_rate = sample_rate
+        self.video_window_frames = video_window_frames
+        self.expected_hw = expected_hw
+        self.video_size = video_size
+        self.video_fps = video_fps
+        self.split = split
+        self.eval_ratio = eval_ratio
+        self.split_seed = split_seed
 
-def _decode_video_audio(mp4_path, target_audio_sr, video_height, video_width, frames_per_second):
-    import torch
-    from torchvision.io import VideoReader
-    from torchaudio.transforms import Resample
+        # fixed metadata file (jsonl)
+        metadata_path = Path(f"{source}/metadata.jsonl")
+        self.records = FineVideoLoader._load_records(metadata_path)
 
-    reader = VideoReader(mp4_path, "video")
-    meta = reader.get_metadata()
-    fps = (meta.get("video", {}).get("fps", [25]) or [25])[0] or 25.0
-    keep_every = max(1, round(fps / frames_per_second)) if frames_per_second and frames_per_second < fps else 1
+        # filter records by 'train' and 'eval' split
+        if self.eval_ratio > 0:
+            filtered = []
+            for record in self.records:
+                is_holdout = self._is_holdout(record['chunk_id'])
+                if (self.split == 'eval') == is_holdout:
+                    filtered.append(record)
+                self.records = filtered
+        if not self.records:
+            raise RuntimeError("No paired (audio, video, caption) found.")
+        print(f"[DataLoader({self.split})] Found {len(self.records)} records.")
+     
+        rng = random.Random(seed)
+        rng.shuffle(self.records)
+        self.idx = 0
 
-    reader.set_current_stream("video")
-    frames = [f["data"].float() / 255.0 for i, f in enumerate(reader) if i % keep_every == 0]
-    video = torch.stack(frames) if frames else torch.zeros(1, 3, video_height, video_width)
+    @staticmethod
+    def _load_records(metadata_path):
+        path = Path(metadata_path)
+        if not path.exists():
+            return list()
+        suffix = path.suffix.lower()
+        if suffix == ".jsonl":
+            records = []
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    records.append(json.loads(line))
+            return records
+        if suffix == ".json":
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for key in ("records", "items", "data"):
+                    if key in data and isinstance(data[key], list):
+                        return data[key]
+            return list()
+        return list()
 
-    native_sr = int((meta.get("audio", {}).get("framerate", [target_audio_sr]) or [target_audio_sr])[0])
-    reader.set_current_stream("audio")
-    chunks = [c["data"] for c in reader]
-    if chunks:
-        import torch as _t
-        audio = _t.cat(chunks, dim=-1)
-    else:
-        import torch as _t
-        audio = _t.zeros(1, int(len(frames) / fps * target_audio_sr))
-        native_sr = target_audio_sr
+    @staticmethod
+    def _decode_video_audio(mp4_path, target_audio_sr, video_width, video_height, video_fps):
+        
+        with av.open(mp4_path) as container:
+            video_stream = container.streams.video[0]
+            audio_stream = container.streams.audio[0]
 
-    if native_sr != target_audio_sr:
-        audio = Resample(native_sr, target_audio_sr)(audio)
+            native_fps = float(video_stream.average_rate)
+            native_h = video_stream.height
+            native_w = video_stream.width
+            native_sr = audio_stream.sample_rate
 
-    return video, audio, native_sr
+            keep_every   = max(1, round(native_fps / video_fps)) if video_fps and video_fps < native_fps else 1
+            needs_resize = (native_h != video_height or native_w != video_width)
 
+            frames = []
+            chunks = []
+            i = 0
 
-class FineVideoDataset:
-    """
-    PyTorch-compatible dataset for FineVideo chunks.
+            for packet in container.demux(video=0, audio=0):
+                if packet.size == 0:
+                    continue
 
-    Each item is a dict with keys:
-        video [T,C,H,W], audio [C,N], text, chunk_id, video_id,
-        start_s, end_s, category, fine_category, activities, tts_segments
-    """
+                try:
+                    # decode video stream
+                    for frame in packet.decode():
+                        if isinstance(frame, av.VideoFrame):
+                            if i % keep_every == 0:
+                                arr = frame.to_ndarray(format="rgb24")
+                                frames.append(torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0)
+                            i += 1
 
-    def __init__(
-        self,
-        metadata_path: str,
-        audio_sr: int = 44_100,
-        video_height: int = 320,
-        video_width: int = 568,
-        frames_per_second: Optional[float] = None,
-        categories: Optional[List[str]] = None,
-        require_caption: bool = False,
-    ):
-        self.audio_sr = audio_sr
-        self.video_height = video_height
-        self.video_width = video_width
-        self.frames_per_second = frames_per_second
+                        # decode audio stream
+                        elif isinstance(frame, av.AudioFrame):
+                            arr = frame.to_ndarray()
+                            if arr.dtype != np.float32:
+                                arr = arr.astype(np.float32) / np.iinfo(arr.dtype).max
+                            chunks.append(torch.from_numpy(arr))
 
-        records = _load_jsonl(Path(metadata_path))
+                            chunks = []
+                            for frame in container.decode(audio=0):
+                                arr = frame.to_ndarray() # float32 for fltp format
+                                if arr.dtype != np.float32:
+                                    arr = arr.astype(np.float32) / np.iinfo(arr.dtype).max
+                                chunks.append(torch.from_numpy(arr))               
+                except av.AVError:
+                    break 
+            
+            if not frames:
+                raise RuntimeError(f"No video frames found in {mp4_path}")
+            if not chunks:
+                raise RuntimeError(f"No audio stream found in {mp4_path}")
 
-        if categories:
-            cats = [c.lower() for c in categories]
-            records = [r for r in records if any(
-                c in r.get("content_parent_category", "").lower() or
-                c in r.get("content_fine_category", "").lower()
-                for c in cats
-            )]
+            video = torch.stack(frames)  # (T, C, H, W)
+            if needs_resize:
+                video = F.interpolate(
+                    video,
+                    size=(video_height, video_width),
+                    mode="bilinear",
+                    align_corners=False,
+                )
 
-        if require_caption:
-            records = [r for r in records if r.get("caption", "").strip()]
+            audio = torch.cat(chunks, dim=-1)  # (C, T)
+            if native_sr != target_audio_sr:
+                audio = Resample(native_sr, target_audio_sr)(audio)
 
-        self.records = [r for r in records if Path(r["chunk_video_path"]).exists()]
-        print(F"FineVideoDataset: {len(self.records)} chunks loaded")
+        return video, audio, native_sr
 
-    def __len__(self):
-        return len(self.records)
+    def _is_holdout(self, chunk_path):
+        if self.eval_ratio <= 0:
+            return False
+        key = f"{self.split_seed}:{str(chunk_path)}".encode("utf-8")
+        h = hashlib.sha1(key).hexdigest()
+        v = int(h[:8], 16) / 0xFFFFFFFF
+        return v < self.eval_ratio
 
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
-        import torch
-        rec = self.records[idx]
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        idx = self.idx % len(self.records)
+        self.idx += 1
+
+        record = self.records[idx]
         try:
-            video, audio, _ = _decode_video_audio(
-                rec["chunk_video_path"], self.audio_sr,
-                self.video_height, self.video_width, self.frames_per_second,
+            video, audio, _ = FineVideoLoader._decode_video_audio(
+                record["chunk_video_path"], self.sample_rate,
+                self.video_size[0], self.video_size[1], self.video_fps,
             )
         except Exception as e:
-            T = max(1, int((rec["end_s"] - rec["start_s"]) * (self.frames_per_second or 25)))
-            video = torch.zeros(T, 3, self.video_height, self.video_width)
-            audio = torch.zeros(2, int((rec["end_s"] - rec["start_s"]) * self.audio_sr))
-
-        caption = rec.get("caption", "")
-
-        return {
-            "video": video,
-            "audio":         audio,
-            "text":          caption,
-            "chunk_id":      rec["chunk_id"],
-            "video_id":      rec["video_id"],
-            "start_s":       rec["start_s"],
-            "end_s":         rec["end_s"],
-            "category":      rec.get("content_parent_category", ""),
-            "fine_category": rec.get("content_fine_category", ""),
-            "activities":    rec.get("activities", []),
-            "tts_segments":  rec.get("tts_segments", []),
-        }
-
-    def collate_fn(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
-        import torch
-        max_t   = max(item["video"].shape[0] for item in batch)
-        C, H, W = batch[0]["video"].shape[1:]
-        video   = torch.zeros(len(batch), max_t, C, H, W)
-        for i, item in enumerate(batch):
-            video[i, :item["video"].shape[0]] = item["video"]
-
-        max_n = max(item["audio"].shape[-1] for item in batch)
-        Ca    = batch[0]["audio"].shape[0]
-        audio = torch.zeros(len(batch), Ca, max_n)
-        for i, item in enumerate(batch):
-            audio[i, :, :item["audio"].shape[-1]] = item["audio"]
-
-        keys = ["text", "chunk_id", "video_id", "start_s", "end_s",
-                "category", "fine_category", "activities"]
-        return {"video": video, "audio": audio, **{k: [item[k] for item in batch] for k in keys}}
+            raise RuntimeError(str(e))
+        
+        caption = record.get("caption", "") 
+        return audio, video, caption
 
 
-# ── Pipeline ──────────────────────────────────────────────────────────────────
+class FineVideoDataset(IterableDataset):
+    def __init__(self, source, seed=0,
+                 window_length=10.0, sample_rate=44100,
+                 video_window_frames=75, expected_hw=(16, 32), 
+                 video_size=(640, 320), split='train', 
+                 video_fps=30.0, eval_ratio=0.1, split_seed=123):
+        super().__init__()
+        self.source = source
+        self.seed = seed
+        self.window_length = window_length
+        self.sample_rate = sample_rate
+        self.video_window_frames = video_window_frames
+        self.expected_hw = expected_hw
+        self.video_size = video_size
+        self.video_fps = video_fps
+        self.split = split
+        self.eval_ratio = eval_ratio
+        self.split_seed = split_seed
 
-def run_pipeline(
-    categories,
-    root_dir="./finevideo_data",
-    window_length=10.0,
-    audio_sr=44_100,
-    video_height=320,
-    max_videos=None,
-    hf_token=None,
-    skip_download=False,
-    skip_chunking=False,
-) -> Path:
-    if not skip_download:
-        download_finevideo(categories, root_dir, max_videos, hf_token)
+    def __iter__(self):
+        info = get_worker_info()
+        wid = info.id if info else 0
+        wseed = (torch.initial_seed() + self.seed + wid) % (2**32)
+        finevid = FineVideoLoader(
+            self.source, seed=int(wseed),
+            window_length=self.window_length,
+            sample_rate=self.sample_rate,
+            video_window_frames=self.video_window_frames,
+            expected_hw=self.expected_hw,
+            video_size=self.video_size,
+            video_fps=self.video_fps,
+            split=self.split,
+            eval_ratio=self.eval_ratio,
+            split_seed=self.seed # fixed at 123
+        )
+        for audio, video, caption in finevid:
+            yield audio.bfloat16(), video.bfloat16(), caption
 
-    if not skip_chunking:
-        return chunk_finevideo(root_dir, window_length, audio_sr, video_height)
 
-    return Path(root_dir) / "chunks_metadata.jsonl"
-
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    p.add_argument("--categories",     nargs="+", required=True)
-    p.add_argument("--root_dir",       default="./finevideo_data")
-    p.add_argument("--max_videos",     type=int,   default=None)
-    p.add_argument("--hf_token",       default=None)
-    p.add_argument("--window_length",  type=float, default=10.0)
-    p.add_argument("--audio_sr",       type=int,   default=44_100)
-    p.add_argument("--video_height",   type=int,   default=320)
-    p.add_argument("--skip_download",  action="store_true")
-    p.add_argument("--skip_chunking",  action="store_true")
-    args = p.parse_args()
-
-    run_pipeline(
-        categories    = args.categories,
-        root_dir      = args.root_dir,
-        window_length = args.window_length,
-        audio_sr      = args.audio_sr,
-        video_height  = args.video_height,
-        max_videos    = args.max_videos,
-        hf_token      = args.hf_token,
-        skip_download = args.skip_download,
-        skip_chunking = args.skip_chunking,
+def get_loader(batch_size, **data_kwargs):
+    if "seed" not in data_kwargs:
+        data_kwargs["seed"] = 123
+    ds = FineVideoDataset(**data_kwargs)
+    return DataLoader(
+        ds,
+        batch_size=batch_size,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=4,
+        drop_last=True,
+        multiprocessing_context="spawn",
     )
+
+def sanity_check():
+    # Sanity check: verify train and eval splits are disjoint
+    train_loader = FineVideoLoader(source='/workspace/dataset/source', seed=123, split='train', eval_ratio=0.1)
+    eval_loader = FineVideoLoader(source='/workspace/dataset/source', seed=123, split='eval', eval_ratio=0.1)
+    
+    train_ids = {record['chunk_id'] for record in train_loader.records}
+    eval_ids = {record['chunk_id'] for record in eval_loader.records}
+    
+    intersection = train_ids & eval_ids
+    print(f"Train split size: {len(train_ids)}")
+    print(f"Eval split size: {len(eval_ids)}")
+    print(f"Intersection size: {len(intersection)}")
+    
+    if intersection:
+        print(f"ERROR: Splits are not disjoint! Overlapping IDs: {intersection}")
+    else:
+        print("✓ Train and eval splits are properly disjoint")
+
+if __name__ == '__main__':
+    # sanity_check()
+    import time
+
+    loader = get_loader(
+        2,
+        source="/workspace/dataset/source",
+        window_length=10.0,
+        sample_rate=44100,
+        video_window_frames=75,
+    )
+
+    loader_iter = iter(loader)
+    total_time = 0.0
+    for i in range(100):
+        t0 = time.time()
+        audio, video, caption = next(loader_iter)
+        t1 = time.time()
+        elapsed = t1 - t0
+        total_time += elapsed
+        if i == 0:
+            print(f"Audio shape : {tuple(audio.shape)}, dtype={audio.dtype}")
+            print(f"Video shape : {tuple(video.shape)}, dtype={video.dtype}")
+        print(f"Batch {i+1:2d}: {elapsed:.3f}s")
+
+    print(f"\nAverage over 10 batches: {total_time / 10:.3f}s")
+
+
+
+
+

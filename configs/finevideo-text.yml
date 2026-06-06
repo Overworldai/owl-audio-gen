@@ -1,32 +1,36 @@
 model:
   model_id: audio
   rope_cls: audio
-  n_layers: 24
+  n_layers: 16
   n_heads: 16
   d_model: 1024
-  d_text: 0         # T5 embed dim
-  # text_encoder: t5-base
+  d_text: 768           # unused, satisfies ModelConfig
+  text_encoder: t5-base
   channels: 64        # stable audio VAE latent channels
   patch_size: 1       # over latent frames
   sample_size: [1, 1] # unused, satisfies ModelConfig
-  window_length: 10.0 # seconds of audio per sample
-  sample_rate: 25  # latent fps (44100 / VAE compression ratio ~2075)
+  window_length: 10.0
+  sample_rate: 25     # audio latent fps
   video_sr: 7.5       # video latent fps
   x0_mode: False
   noise_scale: 1.0
   mlp_ratio: 4
-  video_patch_content: 0
+  video_patch_content: 25600  # C*H*W = 32*20*40
   cfg_prob: 0.1
 
 train:
-  trainer_id: audio
-  data_id: audio_dir_loader
+  trainer_id: finevideo
+  data_id: finevideo
   data_kwargs:
     source: /workspace/dataset/source/
     window_length: 10.0
-    sample_rate: 44100  # raw audio SR for the data loader
+    sample_rate: 48000
+    video_window_frames: 300
+    expected_hw: [20, 40]
+    eval_ratio: 0.1
+    video_size: [640, 320]  # approx. 360p  
   target_batch_size: 128
-  batch_size: 12
+  batch_size: 10
   epochs: 1000
   opt: Muon
   opt_kwargs:
@@ -41,26 +45,27 @@ train:
       - core.proj_out
       - core.norm_out
       - core.ts_embed
-      # - core.text_proj
-      # - core.video_proj
+      - core.video_proj
       - .adaln1
       - .adaln2
       - .gate1
       - .gate2
-  checkpoint_dir: checkpoints/audio_baseline
+      - .adaln_cross
+      - .gate_cross
+  checkpoint_dir: checkpoints/vid2audio_baseline-acestep1.5
   resume_ckpt: null
   sample_interval: 200
   save_interval: 5000
-  sampler_id: audio
+  sampler_id: audio_video
   sampling_steps: 50
   cfg_scale: 1.5
   n_samples: 1
+  video_vae_id: taehv
+  video_vae_ckpt: /workspace/owl-audio-gen/taehv/taehv1_5.pth
   video_fps: 30
-  video_size: [640, 320]  # approx. 360p
   vae_id: ace-step1.5    # audio VAE id
-  
 
 wandb:
   name: its-nmt05
   project: owl-audio-gen
-  run_name: audio-pretrain-ace-step1.5
+  run_name: audio-ace-step1.5-video

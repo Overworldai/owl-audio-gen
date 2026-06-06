@@ -40,7 +40,7 @@ class AudioDiffusionCore(nn.Module):
 
         # video conditioning 
         if config.video_patch_content > 0:
-            self.video_proj = nn.Linear(config.d_text, config.d_model)
+            self.video_proj = nn.Linear(config.video_patch_content, config.d_model)
             self.null_video = nn.Parameter(torch.randn(config.d_model) * 0.02)
         else:
             self.video_proj = None
@@ -128,13 +128,13 @@ class AudioDiffusionModel(nn.Module):
         if self.training:
             if video_tokens is not None:
                 B, T_v = video_tokens.shape[:2]
-                video_drop = torch.rand(B, device=video_tokens.device) < self.cfg_prob[:, None, None]
+                video_drop = torch.rand(B, 1, 1, device=video_tokens.device) < self.cfg_prob
                 null_video = self.core.null_video[None, None, :].expand(B, T_v, -1)
                 video_tokens = torch.where(video_drop, null_video, video_tokens)
 
             if text_tokens is not None:
                 B, T_txt = text_tokens.shape[:2]
-                text_drop  = torch.rand(B, device=text_tokens.device)  < self.cfg_prob[:, None, None]
+                text_drop = torch.rand(B, 1, 1, device=video_tokens.device) < self.cfg_prob
                 null_text = self.core.null_text[None, None, :].expand(B, T_txt, -1) 
                 text_tokens = torch.where(text_drop, null_text, text_tokens)
 

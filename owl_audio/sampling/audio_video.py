@@ -18,11 +18,17 @@ def audio_video_sample(model, shape, video, text_emb, steps, device, dtype,
     ts = torch.ones(shape[0], device=device, dtype=dtype)
 
     # Project video once — reused every step
-    video_tokens = model.project_video(video.to(device=device, dtype=dtype))  # [B, T_v, d_model]
-    null_video = model.null_video[None, None, :].expand_as(video_tokens)
+    video_tokens = None
+    null_video = None
+    if video is not None and model.project_video is not None:
+        video_tokens = model.project_video(video.to(device=device, dtype=dtype))  # [B, T_v, d_model]
+        null_video = model.null_video[None, None, :].expand_as(video_tokens)
 
-    text_tokens = model.text_proj(text_emb.to(device=device, dtype=dtype))  # [B, seq, d_model]
-    null_text = model.null_video[None, None, :].expand_as(text_tokens)
+    text_tokens = None
+    null_text = None
+    if text_emb is not None and model.text_proj is not None:
+        text_tokens = model.text_proj(text_emb.to(device=device, dtype=dtype))  # [B, seq, d_model]
+        null_text = model.null_video[None, None, :].expand_as(text_tokens)
 
     use_cfg = cfg_scale != 1.0
 
