@@ -75,7 +75,7 @@ class FineVideoLoader:
         return list()
 
     @staticmethod
-    def _decode_video_audio(mp4_path, target_audio_sr, video_width, video_height, video_fps):
+    def _decode_video_audio(mp4_path, window_length, target_audio_sr, video_width, video_height, video_fps):
         
         with av.open(mp4_path) as container:
             video_stream = container.streams.video[0]
@@ -87,11 +87,10 @@ class FineVideoLoader:
             native_sr = audio_stream.sample_rate
 
             keep_every   = max(1, round(native_fps / video_fps)) if video_fps and video_fps < native_fps else 1
-            needs_resize = (native_h != video_height or native_w != video_width)
+            video_needs_resize = (native_h != video_height or native_w != video_width)
 
-            frames = []
-            chunks = []
             i = 0
+            frames, chunks = [], []
 
             for packet in container.demux(video=0, audio=0):
                 if packet.size == 0:
@@ -113,32 +112,46 @@ class FineVideoLoader:
                                 arr = arr.astype(np.float32) / np.iinfo(arr.dtype).max
                             chunks.append(torch.from_numpy(arr))
 
-                            chunks = []
-                            for frame in container.decode(audio=0):
-                                arr = frame.to_ndarray() # float32 for fltp format
-                                if arr.dtype != np.float32:
-                                    arr = arr.astype(np.float32) / np.iinfo(arr.dtype).max
-                                chunks.append(torch.from_numpy(arr))               
-                except av.AVError:
-                    break 
+                except Exception as e:
+                    print("decode error:", mp4_path, repr(e))
+                    raise
             
             if not frames:
                 raise RuntimeError(f"No video frames found in {mp4_path}")
             if not chunks:
                 raise RuntimeError(f"No audio stream found in {mp4_path}")
 
-            video = torch.stack(frames)  # (T, C, H, W)
-            if needs_resize:
-                video = F.interpolate(
-                    video,
-                    size=(video_height, video_width),
-                    mode="bilinear",
-                    align_corners=False,
-                )
+        video = torch.stack(frames)  # (T, C, H, W)
+        audio = torch.cat(chunks, dim=-1)  # (C, T)
 
-            audio = torch.cat(chunks, dim=-1)  # (C, T)
-            if native_sr != target_audio_sr:
-                audio = Resample(native_sr, target_audio_sr)(audio)
+        if video_needs_resize:
+            video = F.interpolate(
+                video,
+                size=(video_height, video_width),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        if native_sr != target_audio_sr:
+            audio = Resample(native_sr, target_audio_sr)(audio)
+
+        # pad/trim video
+        expected_frames = int(video_fps * window_length) 
+        video = video[:expected_frames]
+        if video.shape[0] < expected_frames:
+            pad = torch.zeros(expected_frames - video.shape[0], *video.shape[1:], dtype=video.dtype)
+            video = torch.cat([video, pad], dim=0)
+
+        # pad/trim audio
+        expected_samples = int(target_audio_sr * window_length)
+        audio = audio[..., :expected_samples]
+        if audio.shape[-1] < expected_samples:
+            pad = torch.zeros(*audio.shape[:-1], expected_samples - audio.shape[-1], dtype=audio.dtype)
+            audio = torch.cat([audio, pad], dim=-1)
+
+        # convert mono → stereo
+        if audio.shape[0] == 1:
+            audio = audio.repeat(2, 1)
 
         return video, audio, native_sr
 
@@ -159,9 +172,10 @@ class FineVideoLoader:
 
         record = self.records[idx]
         try:
-            video, audio, _ = FineVideoLoader._decode_video_audio(
-                record["chunk_video_path"], self.sample_rate,
-                self.video_size[0], self.video_size[1], self.video_fps,
+            video, audio, nativr_sr = FineVideoLoader._decode_video_audio(
+                record["chunk_video_path"], self.window_length, 
+                self.sample_rate, self.video_size[0], 
+                self.video_size[1], self.video_fps,
             )
         except Exception as e:
             raise RuntimeError(str(e))

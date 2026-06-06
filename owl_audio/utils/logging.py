@@ -137,7 +137,7 @@ def video_audio_to_wandb(video, audio, audio_sr, fps=60):
     return wandb_entries, temp_paths
 
 
-def video_audio_txt_to_wandb(video, audio, captions, audio_sr, fps=60):
+def video_audio_caption_to_wandb(video, audio, captions, audio_sr, fps=60):
     video = video.detach().float().cpu().clamp(0, 1)
     audio = audio.detach().float().cpu().clamp(-1, 1)
 

@@ -5,6 +5,7 @@ import threading
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+import traceback
 
 from tqdm import tqdm
 from datasets import load_dataset
@@ -31,7 +32,7 @@ def download_finevideo(categories=[], root_dir="./finevideo_data", max_videos=No
     os.makedirs(f"{root_dir}/metadata", exist_ok=True)
     
     count = 0
-    for idx, sample in tqdm(enumerate(filtered_ds), desc="Downloading Finevideo", unit="video"):
+    for idx, sample in tqdm(enumerate(filtered_ds), desc="Downloading Finevideo", unit="videos"):
         if max_videos and count >= max_videos:
             break
 
@@ -109,107 +110,188 @@ def create_chunk_caption(video_metadata, t_start, t_end,
     )
     return caption
 
-def chunk_single_video(mp4: Path, chunks_dir: Path, window_length: float,
-                     sample_rate: int, video_size: tuple, video_fps: int,
-                     write_lock: threading.Lock) -> list[dict]:
+def get_hw_encoder() -> str | None:
+    """Detect available hardware encoder, return None if only software available."""
+    hw_encoders = [
+        ("h264_nvenc", "Nvidia"),
+        ("h264_videotoolbox", "Apple"),
+        ("h264_qsv", "Intel"),
+    ]
+    for encoder, name in hw_encoders:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-f", "lavfi", "-i", "nullsrc",
+             "-t", "0.1", "-c:v", encoder, "-f", "null", "-"],
+            capture_output=True
+        )
+        if result.returncode == 0:
+            print(f"[encoder] Using hardware encoder: {name} ({encoder})")
+            return encoder
+    print("[encoder] No hardware encoder found, falling back to libx264")
+    return None
+
+def get_hw_encoder() -> str | None:
+    """Detect available hardware encoder, return None if only software available."""
+    hw_encoders = [
+        ("h264_nvenc", "Nvidia"),
+        ("h264_videotoolbox", "Apple"),
+        ("h264_qsv", "Intel"),
+    ]
+    for encoder, name in hw_encoders:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-f", "lavfi", "-i", "nullsrc",
+             "-t", "0.1", "-c:v", encoder, "-f", "null", "-"],
+            capture_output=True
+        )
+        if result.returncode == 0:
+            print(f"[encoder] Hardware encoder available: {name} ({encoder})")
+            return encoder
+    print("[encoder] No hardware encoder found, using libx264")
+    return None
+
+def probe_duration(path: Path) -> float:
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, text=True
+    )
+    return float(r.stdout.strip())
+
+def chunk_single_video(
+    mp4: Path,
+    chunks_dir: Path,
+    window_length: float,
+    sample_rate: int,
+    video_size: tuple,
+    video_fps: int,
+) -> list[dict]:
     """Chunk a single video file with ffmpeg and return a list of metadata records."""
     video_id = mp4.stem
-    meta_file = f"{mp4.parent.parent}/metadata/{video_id}.json"
+    meta_file = Path(f"{mp4.parent.parent}/metadata/{video_id}.json")
 
-    with open(meta_file, 'r') as f:
+    with open(meta_file, "r") as f:
         metadata = json.load(f)
 
-    duration = metadata['duration_seconds']
     category = {
-        'parent': metadata['content_parent_category'],
-        'fine': metadata['content_fine_category']
+        "parent": metadata["content_parent_category"],
+        "fine": metadata["content_fine_category"],
     }
-    
-    records = []
-    start = 0.0
-    chunk_idx = 0
-    
-    # drop last chunk if dur < window_length
-    while start + window_length <= duration:
-        end = min(start + window_length, duration)
-        chunk_id = f"{video_id}_chunk{chunk_idx:04d}"
-        out_mp4 = Path(f"{chunks_dir}/{chunk_id}.mp4") 
- 
-        if not out_mp4.exists():
-            vf = f"scale={video_size[0]}:{video_size[1]}"
-            result = subprocess.run(
-                [
-                    "ffmpeg", "-y", "-i", str(mp4), "-ss", str(start), "-t", str(end - start),
-                    "-i", str(mp4),
-                    "-vf", vf, "-r", str(video_fps),
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                    "-c:a", "aac", "-ar", str(sample_rate), "-ac", "2",
-                    str(out_mp4),
-                ],
-                capture_output=True,
-                timeout=600
-            )
 
-            if result.returncode != 0:
-                raise RuntimeError(f"ffmpeg failed for {mp4}:\n{result.stderr.decode()}")
- 
+    os.makedirs(chunks_dir, exist_ok=True)
+    video_window_frames = int(window_length * video_fps)
+
+    vf = (
+        f"fps={video_fps},"
+        f"scale={video_size[0]}:{video_size[1]}:force_original_aspect_ratio=increase,"
+        f"crop={video_size[0]}:{video_size[1]}"
+    )
+
+    # always use libx264 — nvenc cannot control GOP size on this machine
+    encoder_args = [
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "28",
+        "-g", str(video_window_frames),
+        "-keyint_min", str(video_window_frames),
+        "-sc_threshold", "0",
+        "-x264-params", "open_gop=0",
+    ]
+
+    out_pattern = str(chunks_dir / f"{video_id}_chunk%04d.mp4")
+
+    result = subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", str(mp4),
+            "-vf", vf,
+            "-r", str(video_fps),
+            "-fps_mode", "cfr",
+            "-pix_fmt", "yuv420p",
+            "-video_track_timescale", str(video_fps * 1000),
+            *encoder_args,
+            "-c:a", "aac", "-ar", str(sample_rate), "-ac", "2",
+            "-f", "segment",
+            "-segment_time", str(window_length),
+            "-reset_timestamps", "1",
+            "-segment_start_number", "0",
+            out_pattern,
+        ],
+        capture_output=True, timeout=7200,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed for {mp4}:\n{result.stderr.decode()}")
+
+    # chunk_files = sorted(chunks_dir.glob(f"{video_id}_chunk*.mp4"))
+    # verify_chunk_durations(chunk_files, window_length)
+
+    mp4.unlink()
+    meta_file.unlink()
+
+    # build metadata records for all the chunks 
+    chunk_files = sorted([f for f in chunks_dir.glob(f"{video_id}_chunk*.mp4")])
+    records = []
+    for i, chunk_path in enumerate(chunk_files):
+        chunk_idx = int(chunk_path.stem.split("chunk")[-1])
+        start = chunk_idx * window_length
+       
+        is_last = i == len(chunk_files) - 1
+        if is_last:
+            chunk_dur = probe_duration(chunk_path)
+            end = start + chunk_dur
+        else:
+            end = start + window_length
+
         records.append({
-            "chunk_id": chunk_id,
+            "chunk_id": chunk_path.stem,
             "video_id": video_id,
-            "chunk_video_path": str(out_mp4),
+            "chunk_video_path": str(chunk_path),
             "t_start": round(start, 3),
             "t_end": round(end, 3),
             "caption": create_chunk_caption(metadata, start, end),
             'category': category
         })
- 
-        start += window_length
-        chunk_idx += 1
-    
-    # delete raw mp4 file
-    with write_lock:
-        mp4.unlink()
 
     return records
  
- 
 def chunk_finevideo(root_dir="./finevideo_data", window_length=10.0, 
                     sample_rate=44_100, video_size=(640, 320), 
-                    video_fps=30, max_workers=8):
+                    video_fps=30, max_workers=32):
     """Split source videos into fixed-length chunks and save into JSONL metadata."""
     video_dir = Path(f"{root_dir}/videos") 
     meta_path = Path(f"{root_dir}/metadata.jsonl")
+    max_workers = min(os.cpu_count(), 64) # limit to 64 workers
 
     chunks_dir = Path(f"{root_dir}/chunks") 
     chunks_dir.mkdir(parents=True, exist_ok=True)
 
-    mp4s = sorted(video_dir.glob("*.mp4"))[:2]
+    mp4s = sorted(video_dir.glob("*.mp4"))
     print(f"Chunking {len(mp4s)} videos → {chunks_dir}")
-
-    print(mp4s)
 
     # guards mp4.unlink() and metadata file writes
     write_lock = threading.Lock()   
+    HW_ENCODER = get_hw_encoder()
 
     with (ThreadPoolExecutor(max_workers=max_workers) as pool,
-        open(meta_path, "a", encoding="utf-8") as meta_f):
+        open(meta_path, "w", encoding="utf-8") as meta_f):
 
         future_to_mp4 = {
-            pool.submit(chunk_single_video, mp4, chunks_dir, 
-                        window_length, sample_rate, 
-                        video_size, video_fps, write_lock)
-            for mp4 in mp4s
+            pool.submit(
+                chunk_single_video, mp4, chunks_dir, 
+                window_length, sample_rate, 
+                video_size, video_fps
+            ) for mp4 in mp4s
         }
  
-        for future in tqdm(as_completed(future_to_mp4), total=len(future_to_mp4), desc="Chunking videos", unit="video"):
+        for future in tqdm(as_completed(future_to_mp4), total=len(future_to_mp4), 
+                           desc="Chunking videos", unit="video"):
             try:
                 records = future.result()
                 with write_lock:
                     for rec in records:
-                        # Save the metadata as jsonl
                         meta_f.write(json.dumps(rec) + "\n")
+                        meta_f.flush()
             except Exception as e:
-                print(e)
+                print(f"[error] {e}")
+                print(traceback.format_exc()) 
                 continue 
 
     print(f"Chunking complete. Metadata: {meta_path}")
@@ -232,7 +314,75 @@ def process_finevideo(
 
     if not skip_chunking:
         return chunk_finevideo(source, window_length, sample_rate, video_size, video_fps)
-    return Path(source) / "chunks_metadata.json"
+    
+    # perform sanity check at last
+    sanity_check(source=cfg.train.data_kwargs.source)
+
+
+def sanity_check(source):
+    """Verify that number of chunk mp4 files matches number of records in metadata.jsonl.
+    Returns True if match, False otherwise and prints a short report.
+    """
+    chunks_dir = Path(f"{source}chunks")
+    meta_path = Path(f"{source}/metadata.jsonl")
+
+    if not chunks_dir.exists():
+        print(f"chunks dir missing: {chunks_dir}")
+        return False
+    if not meta_path.exists():
+        print(f"metadata file missing: {meta_path}")
+        return False
+
+    mp4s = sorted(chunks_dir.glob("*.mp4"))
+    n_mp4 = len(mp4s)
+
+    # count non-empty JSON lines
+    n_meta = 0
+    with open(meta_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.strip():
+                n_meta += 1
+
+    print(f"chunks: {n_mp4}, metadata records: {n_meta}")
+    if n_mp4 != n_meta:
+        print("Mismatch: counts differ")
+        return False
+    print("OK: counts match")
+    return True
+
+def verify_chunk_durations(
+    chunk_files: list[Path],
+    window_length: float,
+    tolerance: float = 0.1,  # 100ms
+) -> None:
+    """Probe all chunk durations and warn on any that are off."""
+    issues = []
+    for chunk in chunk_files:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(chunk)],
+            capture_output=True, text=True
+        )
+        try:
+            dur = float(r.stdout.strip())
+        except ValueError:
+            issues.append(f"  {chunk.name}: could not probe duration")
+            continue
+
+        expected = window_length
+        delta = abs(dur - expected)
+        status = "✓" if delta <= tolerance else "✗"
+        if delta > tolerance:
+            issues.append(f"  {chunk.name}: {dur:.6f}s (expected {expected:.3f}s, delta {delta:.6f}s)")
+        else:
+            print(f"  [{status}] {chunk.name}: {dur:.6f}s")
+
+    if issues:
+        print(f"\n[verify] WARNING — {len(issues)} chunk(s) with duration issues:")
+        for issue in issues:
+            print(issue)
+    else:
+        print(f"\n[verify] All {len(chunk_files)} chunks within {tolerance*1000:.0f}ms tolerance ✓")
 
 
 if __name__ == '__main__':
@@ -247,8 +397,8 @@ if __name__ == '__main__':
         source=cfg.train.data_kwargs.source,
         window_length=cfg.train.data_kwargs.window_length,
         sample_rate=cfg.train.data_kwargs.sample_rate,
-        video_size=cfg.train.video_size,
+        video_size=cfg.train.data_kwargs.video_size,
         video_fps=cfg.train.video_fps,
-        max_videos=1000,
-        skip_download=True
     )
+
+    sanity_check(cfg.train.data_kwargs.source)

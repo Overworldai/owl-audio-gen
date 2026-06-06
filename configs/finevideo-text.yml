@@ -15,7 +15,7 @@ model:
   x0_mode: False
   noise_scale: 1.0
   mlp_ratio: 4
-  video_patch_content: 25600  # C*H*W = 32*20*40
+  video_patch_content: 8192  # C*H*W = 32*20*40
   cfg_prob: 0.1
 
 train:
@@ -26,10 +26,10 @@ train:
     window_length: 10.0
     sample_rate: 48000
     video_window_frames: 300
-    expected_hw: [20, 40]
+    expected_hw: [16, 16]
     eval_ratio: 0.1
-    video_size: [640, 320]  # approx. 360p  
-  target_batch_size: 128
+    video_size: [256, 256]  # 360p  
+  target_batch_size: 64
   batch_size: 6
   epochs: 1000
   opt: Muon
@@ -55,6 +55,7 @@ train:
       - .gate_cross
   checkpoint_dir: checkpoints/vid2audio_baseline-acestep1.5
   resume_ckpt: null
+  eval_interval: 50
   sample_interval: 200
   save_interval: 5000
   sampler_id: audio_video

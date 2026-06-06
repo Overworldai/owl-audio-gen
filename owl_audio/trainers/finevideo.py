@@ -10,7 +10,6 @@ import wandb
 from ema_pytorch import EMA
 from torch.nn.parallel import DistributedDataParallel as DDP
 from itertools import cycle
-
 from transformers import T5EncoderModel, AutoTokenizer
 
 from .base import BaseTrainer
@@ -21,7 +20,7 @@ from ..sampling.audio_video import audio_video_sample
 from ..data import get_loader
 from ..muon import init_muon
 from ..utils import Timer
-from ..utils.logging import LogHelper, audio_to_wandb, video_audio_to_wandb
+from ..utils.logging import LogHelper, audio_to_wandb, video_audio_caption_to_wandb
 
 
 def _video_self_pad(fn, p=1, q=4):
@@ -187,11 +186,8 @@ class FineVideoTrainer(BaseTrainer):
         local_step = 0
         for _ in range(self.train_cfg.epochs):
             for raw_audio, video, caption in train_loader:
-                raw_audio = raw_audio.to(self.device).bfloat16()
-                video = video.to(self.device).bfloat16()
-
-                audio_latents = self.encode(raw_audio)   # [B, C, latent_t]
-                video_latents = self.video_encode_fn(video)
+                audio_latents = self.encode(raw_audio.to(self.device).bfloat16())   # [B, C, latent_t]
+                video_latents = self.video_encode_fn(video.to(self.device).bfloat16())
                 text_emb = self.encode_text(caption) if self.text_encoder else None
 
                 with ctx:
@@ -218,6 +214,24 @@ class FineVideoTrainer(BaseTrainer):
                         wandb_dict["time"] = timer.hit()
                         timer.reset()
 
+                        # perform eval step
+                        if self.total_step_counter % self.train_cfg.eval_interval == 0:
+                            self.self.get_module(ema=True).eval()
+                            eval_losses = []
+
+                            for eval_audio, eval_video, eval_caption in eval_loader:
+                                eval_audio = self.encode(eval_audio.to(self.device).bfloat16())
+                                eval_video = self.video_encode_fn(eval_video.to(self.device).bfloat16())
+                                eval_text_emb = self.encode_text(eval_caption) if self.text_encoder else None
+                                
+                                with ctx:
+                                    loss = self.self.get_module(ema=True)(eval_audio, video=eval_video, text_emb=eval_text_emb)
+                                eval_losses.append(loss.item())
+                            
+                            wandb_dict["eval_loss"] = sum(eval_losses) / len(eval_losses)
+                            self.self.get_module(ema=True).train()
+
+                        # perform sampling
                         if self.total_step_counter % self.train_cfg.sample_interval == 0:
                             for p in pending_video_paths:
                                 try:
@@ -227,10 +241,8 @@ class FineVideoTrainer(BaseTrainer):
                             pending_video_paths = []
                             
                             cond_audio, cond_video, cond_caption = next(eval_iter)
-                            cond_audio = cond_audio.to(self.device).bfloat16()
-                            cond_video = cond_video.to(self.device).bfloat16()
-                            cond_latents = self.encode(cond_audio)
-                            cond_video = self.video_encode_fn(cond_video)
+                            cond_audio = self.encode(cond_audio.to(self.device).bfloat16())
+                            cond_video = self.video_encode_fn(cond_video.to(self.device).bfloat16())
                             cond_text_emb = self.encode_text(cond_caption) if self.text_encoder else None
 
                             with ctx:
@@ -248,8 +260,9 @@ class FineVideoTrainer(BaseTrainer):
 
                             if self.video_decode_fn is not None:
                                 decoded_video = self.video_decode_fn(cond_video[:n_samples])  # [B, T, C, H, W] in [0,1]
-                                entries, paths = video_audio_to_wandb(
+                                entries, paths = video_audio_caption_to_wandb(
                                     decoded_video, decoded_audio,
+                                    cond_caption[:n_samples],
                                     self.raw_audio_sr,
                                     self.train_cfg.video_fps
                                 )
@@ -257,12 +270,6 @@ class FineVideoTrainer(BaseTrainer):
                                 pending_video_paths = paths  # delete next sampling step
                             else:
                                 wandb_dict["samples"] = audio_to_wandb(decoded_audio, self.raw_audio_sr)
-
-                            # compute eval loss
-                            with torch.no_grad():
-                                with ctx:
-                                    eval_loss = self.model(cond_latents, video=cond_video, text_emb=text_emb)
-                            wandb_dict["eval_loss"] = eval_loss
 
                         if self.rank == 0:
                             wandb.log(wandb_dict)
