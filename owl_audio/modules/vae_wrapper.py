@@ -1,7 +1,4 @@
 import torch
-import torch.nn as nn
-import torchaudio.functional as F
-from einops import rearrange
 from dataclasses import dataclass
 from typing import Optional
 
@@ -44,32 +41,6 @@ def load_audio_vae(vae_id, sample_rate, latent_sr, window_length, device):
         from stable_audio_3 import AutoencoderModel
         wrapper_state.vae = AutoencoderModel.from_pretrained("same-l")
         wrapper_state.vae.autoencoder.to(wrapper_state.device).bfloat16().eval()
-    elif vae_id == 'ltx2':
-        from diffusers import AutoencoderKLLTX2Audio
-        from diffusers.models.ltx2_vocoder import LTX2Vocoder
-        from diffusers.models.ltx2_audio_processor import AudioProcessor
-        wrapper_state.vae = AutoencoderKLLTX2Audio.from_pretrained(
-            "Lightricks/LTX-2", 
-            subfolder="audio_vae", 
-            torch_dtype=torch.bfloat16
-        ).to(wrapper_state.device).eval()
-        wrapper_state.vocoder = LTX2Vocoder.from_pretrained(
-            "Lightricks/LTX-2", 
-            subfolder="vocoder", 
-            torch_dtype=torch.bfloat16,
-        ).to(wrapper_state.device).eval()
-        wrapper_state.audio_processor = AudioProcessor(
-            target_sample_rate=wrapper_state.vae.config.sample_rate,
-            mel_bins=wrapper_state.vae.config.mel_bins,
-            mel_hop_length=wrapper_state.vae.config.mel_hop_length,
-            n_fft=1024
-        )
-        wrapper_state.vae.encode = torch.compile(wrapper_state.vae.encode)
-        wrapper_state.vae.decode = torch.compile(wrapper_state.vae.decode)
-        wrapper_state.vocoder.forward = torch.compile(wrapper_state.vocoder.forward)
-
-        wrapper_state.vocoder_sr = wrapper_state.vocoder.config.output_sampling_rate
-        wrapper_state.latent_ch = wrapper_state.vae.config.latent_channels
     elif vae_id == 'mmaudio':
         from ..modules.mmaudio.features_utils import FeaturesUtils
         # the model wights must be already loaded beforehand
@@ -96,21 +67,13 @@ def encode_audio(wrapper_state: VAEWrapperState, raw_audio):
     latent_t = wrapper_state.latent_t
     sample_rate = wrapper_state.sample_rate
     vae = wrapper_state.vae
-    audio_processor = wrapper_state.audio_processor
-    
+
     if vae_id == 'stable_audio':
         # [B, 2, T_raw] bf16 → [B, C, latent_t] bf16
         latents = vae.encode(raw_audio).latent_dist.sample()
         return latents[..., :latent_t]
     elif vae_id == 'stable_audio_3':
         latents = vae.encode(raw_audio, sample_rate)
-        return latents[..., :latent_t]
-    elif vae_id == 'ltx2':
-        audio_processor.float() # cuFFT supports only float32
-        audio = Audio(raw_audio.float(), sample_rate)
-        mel = audio_processor.waveform_to_mel(audio).bfloat16()    # [B, 2, T_mel, n_mels] bf16
-        latents = vae.encode(mel).latent_dist.sample()             # [B, 8, T_mel/4, 16] bf16
-        latents = rearrange(latents, 'b c t f -> b (c f) t')       # [B, 128, T_mel/4] bf16
         return latents[..., :latent_t]
     elif vae_id == 'mmaudio':
         if raw_audio.ndim == 3: # MMAUDIO works only with mono audio
@@ -127,23 +90,13 @@ def encode_audio(wrapper_state: VAEWrapperState, raw_audio):
 @torch.no_grad()
 def decode_audio(wrapper_state: VAEWrapperState, latents):
     vae_id = wrapper_state.vae_id
-    sample_rate = wrapper_state.sample_rate
     vae = wrapper_state.vae
-    vocoder = wrapper_state.vocoder
-    vocoder_sr = wrapper_state.vocoder_sr
-    latent_ch = wrapper_state.latent_ch
-    
+
     if vae_id == 'stable_audio':
         # [B, C, latent_t] bf16 → [B, 2, T_raw] bf16
         return vae.decode(latents).sample
     elif vae_id == 'stable_audio_3':
         return vae.decode(latents)
-    elif vae_id == 'ltx2':
-        latents = rearrange(latents, 'b (c f) t -> b c t f', c=latent_ch)      
-        mel_hat = vae.decode(latents).sample   # [B, 2, T_mel, n_mels] bf16
-        wav_rec = vocoder(mel_hat)             # [B, 2, T_wav] bf16 @24khz
-        wav_rec = F.resample(wav_rec, vocoder_sr, sample_rate)
-        return wav_rec                         # [B, 2, T_raw] bf16
     elif vae_id == 'mmaudio':
         return vae.wrapped_decode(latents)
     elif vae_id == 'ace-step1.5':

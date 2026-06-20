@@ -1,0 +1,74 @@
+model:
+  model_id: audio
+  rope_cls: audio
+  n_layers: 16
+  n_heads: 16
+  d_model: 1024
+  d_text: 0           # unused, satisfies ModelConfig
+  channels: 64        # stable audio VAE latent channels
+  patch_size: 1       # over latent frames
+  sample_size: [1, 1] # unused, satisfies ModelConfig
+  window_length: 10.0
+  sample_rate: 25     # audio latent fps
+  video_sr: 7.5       # video latent fps
+  x0_mode: False
+  noise_scale: 1.0
+  mlp_ratio: 4
+  video_patch_content: 25600  # C*H*W = 32*20*40
+  cfg_prob: 0.1
+
+train:
+  trainer_id: audio_video
+  data_id: video_audio_loader      # decodes mp4 video + audio directly
+  video_encode_on_the_fly: true    # encode video latents with the video VAE in-loop
+  data_kwargs:
+    source: /mnt/data/waypoint/owlctrl_700k/720p   # has train/ and eval/ subdirs
+    window_length: 10.0
+    sample_rate: 48000
+    video_fps: 30            # 60fps source -> raw-frame downsample to 30 before encode
+    video_size: [640, 320]   # (width, height); /16 -> latent [20, 40]
+    clip_seconds: 60.0      # nominal clip length (10min); short clips fall back to retry
+    cache_dir: .cache/video_audio   # sample-ID index cache (must be writable)
+    num_workers: 4
+    prefetch_factor: 4
+  target_batch_size: 64
+  batch_size: 8
+  epochs: 1000
+  opt: Muon
+  opt_kwargs:
+    lr: 5.0e-5
+    momentum: 0.95
+    adamw_lr: 1.0e-4
+    adamw_wd: 1.0e-2
+    adamw_eps: 1.0e-8
+    adamw_betas: [0.95, 0.95]
+    adamw_keys:
+      - core.proj_in
+      - core.proj_out
+      - core.norm_out
+      - core.ts_embed
+      - core.video_proj
+      - .adaln1
+      - .adaln2
+      - .gate1
+      - .gate2
+      - .adaln_cross
+      - .gate_cross
+  checkpoint_dir: ./checkpoints/vid2audio_onthefly-acestep1.5
+  resume_ckpt: null
+  sample_interval: 200
+  save_interval: 5000
+  sampler_id: audio_video
+  sampling_steps: 50
+  cfg_scale: 1.5
+  n_samples: 8
+  video_vae_id: taehv
+  video_vae_ckpt: ./taehv/taehv1_5.pth
+  video_fps: 30
+  video_size: [640, 320]  # approx. 360p
+  vae_id: ace-step1.5    # audio VAE id
+
+wandb:
+  name: shahbuland
+  project: owl-audio-gen
+  run_name: audio-ace-step1.5-video-onthefly

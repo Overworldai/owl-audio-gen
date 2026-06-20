@@ -47,7 +47,6 @@ class DiTBlock(nn.Module):
     def forward(self, x, cond, video_tokens, text_tokens, attn_mask):
         # x : [b,n*p,d]
         # cond : [b,n,d]
-        # attn_mask : flex attn block mask
         # timestamps : [b,n]
         res1 = x.clone()
         x = self.adaln1(x, cond)
@@ -93,37 +92,3 @@ class DiT(nn.Module):
         for block in self.blocks:
             x = block(x, cond, video_tokens, text_tokens, attn_mask)
         return x
-
-class UViT(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-
-        assert config.n_layers % 2 == 1 # Odd layer number required
-
-        early_layers = config.n_layers // 2
-        late_layers = early_layers
-
-        self.early = []
-        for _ in range(early_layers):
-            self.early.append(DiTBlock(config))
-        self.early = nn.ModuleList(self.early)
-
-        self.middle = DiTBlock(config)
-
-        self.late = []
-        for _ in range(late_layers):
-            self.late.append(DiTBlock(config))
-        self.late = nn.ModuleList(self.late)
-    
-    def forward(self, x, cond, attn_mask):
-        residuals = []
-        for block in self.early:
-            x = block(x, cond, attn_mask)
-            residuals.append(x.clone())
-
-        x = self.middle(x, cond, attn_mask)
-
-        for block, residual in zip(self.late, residuals):
-            x = block(x+residual, cond, attn_mask)
-
-        return x, residuals

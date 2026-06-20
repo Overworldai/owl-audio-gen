@@ -35,7 +35,7 @@ class AudioVideoTrainer(BaseTrainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        model_id = getattr(self.model_cfg, "model_id", "vid2audio")
+        model_id = getattr(self.model_cfg, "model_id", "audio")
         self.model = get_model_cls(model_id)(self.model_cfg)
 
         if self.rank == 0:
@@ -58,6 +58,11 @@ class AudioVideoTrainer(BaseTrainer):
         self.video_vae_id = getattr(self.train_cfg, "video_vae_id", None)
         self.video_vae_ckpt = getattr(self.train_cfg, "video_vae_ckpt", None)
         self.video_decode_fn = None
+        self.video_encode_fn = None
+        # When True, the loader yields raw video frames ([B, T, 3, H, W] uint8)
+        # and we encode them with the video VAE on the fly instead of loading
+        # pre-encoded latents from disk.
+        self.video_encode_on_the_fly = getattr(self.train_cfg, "video_encode_on_the_fly", False)
         
         if self.rank == 0:
             print(f"Loading {self.vae_id} Audio VAE...")
@@ -86,6 +91,12 @@ class AudioVideoTrainer(BaseTrainer):
     @torch.no_grad()
     def decode(self, latents):
         return decode_audio(self.vae, latents)
+
+    @torch.no_grad()
+    def encode_video(self, frames):
+        # frames: [B, T, 3, H, W] uint8 in [0, 255] -> latents [B, T_lat, C, H, W]
+        frames = frames.to(self.device, dtype=torch.bfloat16).div_(255.0)
+        return self.video_encode_fn(frames)
 
     def encode_text(self, text):
         # text: List[str], length B
@@ -123,8 +134,14 @@ class AudioVideoTrainer(BaseTrainer):
         if self.video_vae_id == "taehv":
             from taehv.taehv import TAEHV
             _taehv = TAEHV(self.video_vae_ckpt).cuda().bfloat16().eval()
-            self.video_encode_fn = lambda x: _taehv.encode_video(x)
+            self.video_encode_fn = lambda x: _taehv.encode_video(x, show_progress_bar=False)
             self.video_decode_fn = lambda x: _video_self_pad(_taehv.decode_video)(x).clamp(0, 1)
+
+        if self.video_encode_on_the_fly and self.video_encode_fn is None:
+            raise ValueError(
+                "video_encode_on_the_fly=True requires a video VAE; set video_vae_id "
+                "(e.g. 'taehv') and video_vae_ckpt in the config."
+            )
 
         self.model = self.model.cuda().train()
         if self.world_size > 1:
@@ -180,9 +197,14 @@ class AudioVideoTrainer(BaseTrainer):
         
         local_step = 0
         for _ in range(self.train_cfg.epochs):
-            for raw_audio, video_latents in train_loader:
+            for raw_audio, video in train_loader:
                 raw_audio = raw_audio.to(self.device).bfloat16()
-                video_latents = video_latents.to(self.device).bfloat16()
+                if self.video_encode_on_the_fly:
+                    # video: raw frames [B, T, 3, H, W] uint8 -> encode on the fly
+                    video_latents = self.encode_video(video)
+                else:
+                    # video: pre-encoded latents [B, T_lat, C, H, W]
+                    video_latents = video.to(self.device).bfloat16()
 
                 audio_latents = self.encode(raw_audio)   # [B, C, latent_t]
 
@@ -221,12 +243,25 @@ class AudioVideoTrainer(BaseTrainer):
                             cond_audio, cond_video = next(eval_iter)
                             cond_audio = cond_audio.to(self.device).bfloat16()
                             cond_latents = self.encode(cond_audio)
-                            cond_video = cond_video.bfloat16().to(self.device)
+
+                            # cond_video_lat: latents used for conditioning + eval loss.
+                            # decoded_video: [B, T, C, H, W] in [0,1] frames to log (or None).
+                            decoded_video = None
+                            if self.video_encode_on_the_fly:
+                                # raw frames [B, T, 3, H, W] uint8 -> [0,1] bf16, encode for cond
+                                cond_frames = cond_video.to(self.device, dtype=torch.bfloat16).div(255.0)
+                                cond_video_lat = self.video_encode_fn(cond_frames)
+                                decoded_video = cond_frames[:n_samples]  # log the real input frames
+                            else:
+                                cond_video_lat = cond_video.bfloat16().to(self.device)
+                                if self.video_decode_fn is not None:
+                                    decoded_video = self.video_decode_fn(cond_video_lat[:n_samples])
+
                             with ctx:
                                 audio_samples = audio_video_sample(
                                     self.get_module(ema=True).core,
                                     shape=(n_samples, self.model_cfg.channels, self.latent_t),
-                                    video=cond_video[:n_samples],
+                                    video=cond_video_lat[:n_samples],
                                     text_emb=None,
                                     steps=self.train_cfg.sampling_steps,
                                     device=self.device,
@@ -235,8 +270,7 @@ class AudioVideoTrainer(BaseTrainer):
                                 )
                             decoded_audio = self.decode(audio_samples)  # [B, 2, T_raw]
 
-                            if self.video_decode_fn is not None:
-                                decoded_video = self.video_decode_fn(cond_video[:n_samples])  # [B, T, C, H, W] in [0,1]
+                            if decoded_video is not None:
                                 entries, paths = video_audio_to_wandb(
                                     decoded_video, decoded_audio,
                                     self.raw_audio_sr,
@@ -250,7 +284,7 @@ class AudioVideoTrainer(BaseTrainer):
                             # compute eval loss
                             with torch.no_grad():
                                 with ctx:
-                                    eval_loss = self.model(cond_latents, video=cond_video)
+                                    eval_loss = self.model(cond_latents, video=cond_video_lat)
                             wandb_dict["eval_loss"] = eval_loss
 
                         if self.rank == 0:
