@@ -27,10 +27,11 @@ train:
     sample_rate: 48000
     video_fps: 30            # 60fps source -> raw-frame downsample to 30 before encode
     video_size: [640, 320]   # (width, height); /16 -> latent [20, 40]
-    clip_seconds: 60.0      # nominal clip length (10min); short clips fall back to retry
-    cache_dir: .cache/video_audio   # sample-ID index cache (must be writable)
+    decode_mode: yuv         # "yuv": ship native yuv420p, convert+resize on GPU
+                             # "rgb": resize to video_size in the worker (A/B comparison)
+    cache_dir: .cache/video_audio   # manifest index cache (must be writable)
     num_workers: 4
-    prefetch_factor: 4
+    prefetch_factor: 4       # native-YUV windows are ~414MB each; keep prefetch modest
   target_batch_size: 64
   batch_size: 8
   epochs: 1000

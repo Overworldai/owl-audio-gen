@@ -17,6 +17,7 @@ from ..modules.vae_wrapper import load_audio_vae, encode_audio, decode_audio
 from ..models.text_encoder import RichTextEncoder
 from ..sampling.audio_video import audio_video_sample
 from ..data import get_loader
+from ..data.video_audio_loader import yuv420p_to_rgb01
 from ..muon import init_muon
 from ..utils import Timer
 from ..utils.logging import LogHelper, audio_to_wandb, video_audio_to_wandb
@@ -59,10 +60,16 @@ class AudioVideoTrainer(BaseTrainer):
         self.video_vae_ckpt = getattr(self.train_cfg, "video_vae_ckpt", None)
         self.video_decode_fn = None
         self.video_encode_fn = None
-        # When True, the loader yields raw video frames ([B, T, 3, H, W] uint8)
-        # and we encode them with the video VAE on the fly instead of loading
-        # pre-encoded latents from disk.
+        # When True, the loader yields raw video frames and we encode them with
+        # the video VAE on the fly instead of loading pre-encoded latents.
         self.video_encode_on_the_fly = getattr(self.train_cfg, "video_encode_on_the_fly", False)
+
+        # How the loader ships frames: "rgb" -> [B,T,3,H,W] uint8 (just /255);
+        # "yuv" -> packed yuv420p [B,T,H*3//2,W] uint8 (convert+resize on GPU).
+        dk = getattr(self.train_cfg, "data_kwargs", {}) or {}
+        self.video_decode_mode = dk.get("decode_mode", "rgb")
+        vsz = dk.get("video_size", (640, 320))
+        self.video_out_hw = (int(vsz[1]), int(vsz[0]))   # (height, width)
         
         if self.rank == 0:
             print(f"Loading {self.vae_id} Audio VAE...")
@@ -93,10 +100,17 @@ class AudioVideoTrainer(BaseTrainer):
         return decode_audio(self.vae, latents)
 
     @torch.no_grad()
-    def encode_video(self, frames):
-        # frames: [B, T, 3, H, W] uint8 in [0, 255] -> latents [B, T_lat, C, H, W]
-        frames = frames.to(self.device, dtype=torch.bfloat16).div_(255.0)
-        return self.video_encode_fn(frames)
+    def video_to_rgb01(self, video):
+        # Loader output -> RGB frames [B, T, 3, H, W] bf16 in [0, 1].
+        video = video.to(self.device, non_blocking=True)
+        if self.video_decode_mode == "yuv":
+            return yuv420p_to_rgb01(video, self.video_out_hw)   # packed yuv420p -> rgb on GPU
+        return video.to(dtype=torch.bfloat16).div_(255.0)       # rgb uint8 -> [0,1]
+
+    @torch.no_grad()
+    def encode_video(self, video):
+        # video: loader frames (rgb or yuv) -> latents [B, T_lat, C, H, W]
+        return self.video_encode_fn(self.video_to_rgb01(video))
 
     def encode_text(self, text):
         # text: List[str], length B
@@ -248,8 +262,8 @@ class AudioVideoTrainer(BaseTrainer):
                             # decoded_video: [B, T, C, H, W] in [0,1] frames to log (or None).
                             decoded_video = None
                             if self.video_encode_on_the_fly:
-                                # raw frames [B, T, 3, H, W] uint8 -> [0,1] bf16, encode for cond
-                                cond_frames = cond_video.to(self.device, dtype=torch.bfloat16).div(255.0)
+                                # raw frames (rgb or yuv) -> [0,1] rgb, encode for cond
+                                cond_frames = self.video_to_rgb01(cond_video)
                                 cond_video_lat = self.video_encode_fn(cond_frames)
                                 decoded_video = cond_frames[:n_samples]  # log the real input frames
                             else:
