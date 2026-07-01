@@ -26,6 +26,12 @@ class ModelConfig:
     kernel_size: Optional[Tuple[int, int]] = None
     mlp_ratio: int = 4
 
+    video_patch_size_spatial: Tuple[int, int] = (1, 1)  # (p_h, p_w) for spatial patching
+    video_channels: int = 32
+    video_latent_hw: Tuple[int, int] = (20, 40)          # latent spatial dims (H, W)
+    window_length: float = 10.0
+    video_sr: float = 7.5
+
 @dataclass
 class TrainingConfig:
     trainer_id : str = None

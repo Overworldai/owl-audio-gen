@@ -14,8 +14,11 @@ model:
   x0_mode: False
   noise_scale: 1.0
   mlp_ratio: 4
-  video_patch_content: 25600  # C*H*W = 32*20*40
+  video_patch_content: 25600  # unused when video_patch_size_spatial != (1,1)
   cfg_prob: 0.1
+  video_patch_size_spatial: [4, 4]
+  video_channels: 32
+  video_latent_hw: [20, 40]
 
 train:
   trainer_id: audio_video

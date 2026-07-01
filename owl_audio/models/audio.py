@@ -8,6 +8,7 @@ from ..configs import Config
 from ..nn.dit import DiT
 from ..nn.embeddings import TimestepEmbedding
 from ..nn.modulation import AdaLN
+from ..utils import int_to_tuple
 
 """
 Audio diffusion transformer model
@@ -40,16 +41,55 @@ class AudioDiffusionCore(nn.Module):
 
         # video conditioning 
         if config.video_patch_content > 0:
-            self.video_proj = nn.Linear(config.video_patch_content, config.d_model)
+            v_ps = int_to_tuple(getattr(config, 'video_patch_size_spatial', (1, 1)))
+            self.v_patch_h, self.v_patch_w = v_ps[0], v_ps[1] if len(v_ps) > 1 else v_ps[0]
+            v_channels = getattr(config, 'video_channels', 32)
+
+            if self.v_patch_h == 1 and self.v_patch_w == 1:
+                patch_in = config.video_patch_content
+            else:
+                patch_in = self.v_patch_h * self.v_patch_w * v_channels
+
+            self.video_proj = nn.Linear(patch_in, config.d_model)
+
+            # Learned spatial position embeddings (2D grid, shared across frames)
+            v_latent_h, v_latent_w = int_to_tuple(
+                getattr(config, 'video_latent_hw', (20, 40))
+            )
+            self.n_vh = v_latent_h // self.v_patch_h
+            self.n_vw = v_latent_w // self.v_patch_w
+            self.video_spatial_pos = nn.Parameter(
+                torch.randn(1, self.n_vh, self.n_vw, config.d_model) * 0.02
+            )
+
             self.null_video = nn.Parameter(torch.randn(config.d_model) * 0.02)
         else:
             self.video_proj = None
             self.null_video = None
+            self.v_patch_h = self.v_patch_w = 1
+            self.n_vh = self.n_vw = 0
     
     def project_video(self, video):
-        """Raw [B, T_v, C, H, W] -> projected [B, T_v, d_model]."""
-        B, T_v, *_ = video.shape
-        return self.video_proj(video.reshape(B, T_v, -1))
+        """Raw [B, T_v, C, H, W] -> projected [B, T_v * n_patches, d_model]."""
+        B, T_v, C, H, W = video.shape
+        n_h = H // self.v_patch_h
+        n_w = W // self.v_patch_w
+        p_h, p_w = self.v_patch_h, self.v_patch_w
+
+        # Patchify: [B, T_v, C, H, W] -> [B, T_v, n_h, n_w, C*p_h*p_w]
+        video = video.view(B, T_v, C, n_h, p_h, n_w, p_w)
+        video = video.permute(0, 1, 3, 5, 2, 4, 6)
+        video = video.reshape(B, T_v, n_h, n_w, -1)
+
+        # Project each patch to d_model
+        video = self.video_proj(video)
+
+        # Add spatial position embeddings (shared across frames)
+        video = video + self.video_spatial_pos[:, :n_h, :n_w, :]
+
+        # Flatten spatial and temporal dims
+        video = video.view(B, T_v * n_h * n_w, -1)
+        return video
 
     def forward(self, x, ts, video_tokens=None, text_tokens=None, attn_mask=None):
         # x           : [B, C, T]

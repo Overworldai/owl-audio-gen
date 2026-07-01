@@ -87,7 +87,18 @@ class VideoAudioRoPE(nn.Module):
 
     def forward(self, q, k):
         q = self.apply(q, self.audio_freqs)
-        k = self.apply(k, self.video_freqs)
+        # k may have spatial patches flattened into the temporal dim;
+        # repeat video_freqs to match so all patches at the same time
+        # share the same temporal RoPE.
+        n_temporal = self.video_freqs.shape[0]
+        if k.shape[2] > n_temporal:
+            n_patches_k = k.shape[2] // n_temporal
+            freqs = self.video_freqs.repeat_interleave(n_patches_k, dim=0)
+        elif k.shape[2] < n_temporal:
+            freqs = self.video_freqs[:k.shape[2]]
+        else:
+            freqs = self.video_freqs
+        k = self.apply(k, freqs)
         return q, k
     
 def get_rope_cls(name):
