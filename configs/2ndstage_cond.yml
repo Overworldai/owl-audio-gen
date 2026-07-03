@@ -1,9 +1,9 @@
 model:
   model_id: audio
   rope_cls: audio
-  n_layers: 16
-  n_heads: 16
-  d_model: 1024
+  n_layers: 24
+  n_heads: 24
+  d_model: 1536
   d_text: 0           # unused, satisfies ModelConfig
   channels: 64        # stable audio VAE latent channels
   patch_size: 1       # over latent frames
@@ -24,18 +24,18 @@ train:
   data_id: video_audio_loader      # decodes mp4 video + audio directly
   video_encode_on_the_fly: true    # encode video latents with the video VAE in-loop
   data_kwargs:
-    source: /mnt/data/waypoint/owlctrl_700k/720p   # has train/ and eval/ subdirs
+    source: /workspace/dataset/source   # has train/ and eval/ subdirs
     window_length: 10.0
     sample_rate: 48000
     video_fps: 30            # 60fps source -> raw-frame downsample to 30 before encode
-    video_size: [640, 320]   # (width, height); /16 -> latent [20, 40]
+    video_size: [320, 320]   # (width, height); /16 -> latent [20, 40]
     decode_mode: yuv         # "yuv": ship native yuv420p, convert+resize on GPU
                              # "rgb": resize to video_size in the worker (A/B comparison)
     cache_dir: .cache/video_audio   # manifest index cache (must be writable)
     num_workers: 4
-    prefetch_factor: 4       # native-YUV windows are ~414MB each; keep prefetch modest
-  target_batch_size: 64
-  batch_size: 8
+    prefetch_factor: 2       # native-YUV windows are ~414MB each; keep prefetch modest
+  target_batch_size: 4
+  batch_size: 2
   epochs: 1000
   opt: Muon
   opt_kwargs:
@@ -51,20 +51,22 @@ train:
       - core.norm_out
       - core.ts_embed
       - core.video_proj
+      - core.spatial_emb
       - .adaln1
       - .adaln2
       - .gate1
       - .gate2
       - .adaln_cross
       - .gate_cross
-  checkpoint_dir: ./checkpoints/vid2audio_onthefly-acestep1.5
+  checkpoint_dir: ./checkpoints/stage-2-vid-cond
   resume_ckpt: null
+  pretrain_ckpt: /workspace/owl-audio-gen/checkpoints/audio_baseline/step_5000.pt  # start from pretrained audio-only model
   sample_interval: 200
-  save_interval: 5000
+  save_interval: 4000
   sampler_id: audio_video
   sampling_steps: 50
-  cfg_scale: 1.5
-  n_samples: 8
+  cfg_scale: 2
+  n_samples: 2
   video_vae_id: taehv
   video_vae_ckpt: ./taehv/taehv1_5.pth
   video_fps: 30
@@ -72,6 +74,6 @@ train:
   vae_id: ace-step1.5    # audio VAE id
 
 wandb:
-  name: shahbuland
+  name: its-nmt05
   project: owl-audio-gen
-  run_name: audio-ace-step1.5-video-onthefly
+  run_name: stage2-vid-cond

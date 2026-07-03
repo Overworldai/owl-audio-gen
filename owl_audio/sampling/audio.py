@@ -26,9 +26,9 @@ def audio_sample(model, shape, steps, device, dtype,
     use_cfg = cfg_scale != 1.0
 
     for dt in tqdm(get_sd3_euler(steps).to(device=device, dtype=dtype), disable=not progress_bar):
-        cond_pred = model(x, ts, text_tokens)
+        cond_pred = model(x, ts, text_tokens=text_tokens)
         if use_cfg:
-            uncond_pred = model(x, ts, null_tokens)
+            uncond_pred = model(x, ts, text_tokens=null_tokens)
             pred = uncond_pred + cfg_scale * (cond_pred - uncond_pred)
         else:
             pred = cond_pred

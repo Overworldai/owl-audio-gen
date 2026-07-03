@@ -216,7 +216,7 @@ class FineVideoTrainer(BaseTrainer):
 
                         # perform eval step
                         if self.total_step_counter % self.train_cfg.eval_interval == 0:
-                            self.self.get_module(ema=True).eval()
+                            self.get_module(ema=True).eval()
                             eval_losses = []
 
                             for eval_audio, eval_video, eval_caption in eval_loader:
@@ -225,11 +225,11 @@ class FineVideoTrainer(BaseTrainer):
                                 eval_text_emb = self.encode_text(eval_caption) if self.text_encoder else None
                                 
                                 with ctx:
-                                    loss = self.self.get_module(ema=True)(eval_audio, video=eval_video, text_emb=eval_text_emb)
+                                    loss = self.get_module(ema=True)(eval_audio, video=eval_video, text_emb=eval_text_emb)
                                 eval_losses.append(loss.item())
                             
                             wandb_dict["eval_loss"] = sum(eval_losses) / len(eval_losses)
-                            self.self.get_module(ema=True).train()
+                            self.get_module(ema=True).train()
 
                         # perform sampling
                         if self.total_step_counter % self.train_cfg.sample_interval == 0:

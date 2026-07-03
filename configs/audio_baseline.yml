@@ -1,7 +1,7 @@
 model:
   model_id: audio
   rope_cls: audio
-  n_layers: 28
+  n_layers: 24
   n_heads: 24
   d_model: 1536
   d_text: 0           # unused, satisfies ModelConfig
@@ -9,24 +9,25 @@ model:
   patch_size: 1       # over latent frames
   sample_size: [1, 1] # unused, satisfies ModelConfig
   window_length: 10.0 # seconds of audio per sample
-  sample_rate: 21.2   # latent fps (44100 / VAE compression ratio ~2075)
+  sample_rate: 25     # latent fps 
   x0_mode: False
   noise_scale: 1.0
   mlp_ratio: 4
+  video_channels: 0   # unused, satisfies ModelConfig
 
 train:
   trainer_id: audio
   data_id: audio_dir_loader
   data_kwargs:
-    source: /path/to/your/mp4/dataset
-    window_length: 20.0
-    sample_rate: 44100  # raw audio SR for the data loader
-  target_batch_size: 256
-  batch_size: 32
+    source: /workspace/dataset/source
+    window_length: 10.0
+    sample_rate: 48000  # raw audio SR for the data loader
+  target_batch_size: 48
+  batch_size: 24
   epochs: 1000
   opt: Muon
   opt_kwargs:
-    lr: 1.0e-5
+    lr: 5.0e-5
     momentum: 0.95
     adamw_lr: 1.0e-4
     adamw_wd: 1.0e-2
@@ -43,13 +44,14 @@ train:
       - .gate2
   checkpoint_dir: checkpoints/audio_baseline
   resume_ckpt: null
-  sample_interval: 200
+  sample_interval: 400
   save_interval: 5000
   sampler_id: audio
   sampling_steps: 50
   n_samples: 8
+  vae_id: ace-step1.5    # audio VAE id
 
 wandb:
-  name: your_wandb_entity
+  name: its-nmt05
   project: owl-audio-gen
   run_name: audio-baseline

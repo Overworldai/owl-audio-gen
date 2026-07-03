@@ -35,7 +35,7 @@ class DiTBlock(nn.Module):
             self.gate_cross_text = None
 
         # video cross attn
-        if config.video_patch_content > 0:
+        if config.video_channels > 0:
             self.cross_attn_video = CrossAttnVid(config)
             self.adaln_cross_video = AdaLN(config)
             self.gate_cross_video = Gate(config)

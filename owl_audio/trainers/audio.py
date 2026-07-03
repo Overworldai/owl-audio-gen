@@ -147,15 +147,8 @@ class AudioTrainer(BaseTrainer):
             **self.train_cfg.data_kwargs,
         )
         n_samples = getattr(self.train_cfg, "n_samples", 2)
+        cfg_scale = getattr(self.train_cfg, "cfg_scale", 1.5)
 # 
-        # eval_loader = get_loader(
-        #     self.train_cfg.data_id,
-        #     batch_size=n_samples,
-        #     split='eval',
-        #     **self.train_cfg.data_kwargs,
-        # )
-        # eval_iter = cycle(eval_loader)
-
         local_step = 0
         for _ in range(self.train_cfg.epochs):
             for raw_audio in train_loader:
@@ -189,15 +182,11 @@ class AudioTrainer(BaseTrainer):
                         timer.reset()
 
                         if self.total_step_counter % self.train_cfg.sample_interval == 0:
-
-                            # cond_audio, cond_caption = next(eval_iter)
-                            # cond_audio = cond_audio.to(self.device).bfloat16()
-                            # cond_text_emb = self.encode_text(cond_caption)
                             with ctx:
                                 latent_samples = audio_sample(
                                     self.get_module(ema=True).core,
                                     text_emb=None,
-                                    cfg_scale=self.train_cfg.cfg_scale,
+                                    cfg_scale=cfg_scale,
                                     shape=(n_samples, self.model_cfg.channels, self.latent_t),
                                     steps=self.train_cfg.sampling_steps,
                                     device=self.device,
@@ -205,12 +194,6 @@ class AudioTrainer(BaseTrainer):
                                 )
                             decoded = self.decode(latent_samples)  # [B, 2, T_raw]
                             wandb_dict["samples"] = audio_to_wandb(decoded, self.raw_audio_sr)
-
-                            # # compute eval loss
-                            # cond_latents = self.encode(cond_audio)
-                            # with ctx:
-                            #     eval_loss = self.model(cond_latents, text_emb=cond_text_emb)
-                            # wandb_dict["eval_loss"] = eval_loss
 
                         if self.rank == 0:
                             wandb.log(wandb_dict)

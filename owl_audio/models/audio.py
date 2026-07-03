@@ -31,86 +31,77 @@ class AudioDiffusionCore(nn.Module):
 
         self.ts_embed = TimestepEmbedding(config.d_model)
 
-        # text conditioning 
-        if config.d_text > 0:
-            self.text_proj = nn.Linear(config.d_text, config.d_model)
-            self.null_text = nn.Parameter(torch.randn(config.d_model) * 0.02)
+        self._init_text_cond(config)
+        self._init_video_cond(config)
+
+    def _init_text_cond(self, config):
+        has_text = config.d_text > 0
+        if has_text:
+            self.text_proj = nn.Linear(config.d_text, config.d_model) if has_text else None
+            self.null_text = nn.Parameter(torch.randn(config.d_model) * 0.02) if has_text else None
         else:
             self.text_proj = None
             self.null_text = None
 
-        # video conditioning 
-        if config.video_patch_content > 0:
-            v_ps = int_to_tuple(getattr(config, 'video_patch_size_spatial', (1, 1)))
-            self.v_patch_h, self.v_patch_w = v_ps[0], v_ps[1] if len(v_ps) > 1 else v_ps[0]
-            v_channels = getattr(config, 'video_channels', 32)
-
-            if self.v_patch_h == 1 and self.v_patch_w == 1:
-                patch_in = config.video_patch_content
-            else:
-                patch_in = self.v_patch_h * self.v_patch_w * v_channels
-
-            self.video_proj = nn.Linear(patch_in, config.d_model)
-
-            # Learned spatial position embeddings (2D grid, shared across frames)
-            v_latent_h, v_latent_w = int_to_tuple(
-                getattr(config, 'video_latent_hw', (20, 40))
+    def _init_video_cond(self, config):
+        has_video = config.video_channels > 0
+        if has_video:
+            self.v_patch_h, self.v_patch_w = config.video_patch_spatial
+            patch_in = self.v_patch_h * self.v_patch_w * config.video_channels
+            self.video_proj = nn.Sequential(
+                nn.Linear(patch_in, 4 * config.d_model),
+                nn.GELU(),
+                nn.Linear(4 * config.d_model, config.d_model),
+                nn.LayerNorm(config.d_model),
+                nn.Dropout(0.1)
             )
-            self.n_vh = v_latent_h // self.v_patch_h
-            self.n_vw = v_latent_w // self.v_patch_w
-            self.video_spatial_pos = nn.Parameter(
-                torch.randn(1, self.n_vh, self.n_vw, config.d_model) * 0.02
-            )
-
-            self.null_video = nn.Parameter(torch.randn(config.d_model) * 0.02)
+            
+            h_lat, w_lat = config.video_latent_hw
+            self.t_video = int(config.video_sr * config.window_length)
+            self.n_spatial = (h_lat // self.v_patch_h) * (w_lat // self.v_patch_w)
+            n_video = self.t_video * self.n_spatial   # 75*(20/5)*(20/5) = 75*16 = 1200
+            self.null_video = nn.Parameter(torch.randn(n_video, config.d_model) * 0.02)
+            self.spatial_emb = nn.Parameter(torch.randn(self.n_spatial, config.d_model) * 0.02)
         else:
             self.video_proj = None
             self.null_video = None
+            self.spatial_emb = None
             self.v_patch_h = self.v_patch_w = 1
-            self.n_vh = self.n_vw = 0
-    
+
     def project_video(self, video):
-        """Raw [B, T_v, C, H, W] -> projected [B, T_v * n_patches, d_model]."""
-        B, T_v, C, H, W = video.shape
-        n_h = H // self.v_patch_h
-        n_w = W // self.v_patch_w
-        p_h, p_w = self.v_patch_h, self.v_patch_w
+        """[B, T_v, C, H, W] -> [B, N_v, d_model]"""
+        video = eo.rearrange(
+            video, 'b t c (n_h p_h) (n_w p_w) -> b (t n_h n_w) (c p_h p_w)',
+            p_h=self.v_patch_h, p_w=self.v_patch_w,
+        )
+        video_tokens = self.video_proj(video)
+        return self.add_spatial_emb(video_tokens)
 
-        # Patchify: [B, T_v, C, H, W] -> [B, T_v, n_h, n_w, C*p_h*p_w]
-        video = video.view(B, T_v, C, n_h, p_h, n_w, p_w)
-        video = video.permute(0, 1, 3, 5, 2, 4, 6)
-        video = video.reshape(B, T_v, n_h, n_w, -1)
-
-        # Project each patch to d_model
-        video = self.video_proj(video)
-
-        # Add spatial position embeddings (shared across frames)
-        video = video + self.video_spatial_pos[:, :n_h, :n_w, :]
-
-        # Flatten spatial and temporal dims
-        video = video.view(B, T_v * n_h * n_w, -1)
-        return video
+    # adding learned spatial embedding
+    def add_spatial_emb(self, video_tokens):
+        # video_tokens: [B, N_v, d_model]
+        video_tokens = eo.rearrange(
+            video_tokens, 'b (t n) d -> b t n d', 
+            t=self.t_video, n=self.n_spatial            
+        )
+        video_tokens = video_tokens + self.spatial_emb[None, None, :, :]
+        return eo.rearrange(video_tokens, 'b t n d -> b (t n) d')
 
     def forward(self, x, ts, video_tokens=None, text_tokens=None, attn_mask=None):
-        # x           : [B, C, T]
-        # video       : [B, T_v, C_v, H_v, W_v] — raw, will be projected
-        # video_tokens: [B, T_v, d_model]        — pre-projected, bypasses video_proj
-        # text_tokens : [B, T_txt, d_model]
+        # x            : [B, C, T]          
+        # video_tokens : [B, N_v, d_model]    
+        # text_tokens  : [B, T_txt, d_model]  
         cond = self.ts_embed(ts)
 
-        # Patchify audio: [B, C, n_p*p] -> [B, n_p, p*C]
-        x = eo.rearrange(x, 'b c (n_p p) -> b n_p (p c)', p=self.patch_size)
-        x = self.proj_in(x)  # [B, n_p, d_model]
+        x = eo.rearrange(x, 'b c (n p) -> b n (p c)', p=self.patch_size)
+        x = self.proj_in(x)
 
         x = self.dit(x, cond, video_tokens, text_tokens, attn_mask)
         x = self.norm_out(x, cond)
         x = self.proj_out(x)
 
-        # Depatchify: [B, n_p, p*C] -> [B, C, n_p*p]
-        x = eo.rearrange(x, 'b n_p (p c) -> b c (n_p p)', p=self.patch_size, c=self.channels)
-
+        x = eo.rearrange(x, 'b n (p c) -> b c (n p)', p=self.patch_size, c=self.channels)
         return x
-
 
 class AudioDiffusionModel(nn.Module):
     def __init__(self, config):
@@ -139,7 +130,7 @@ class AudioDiffusionModel(nn.Module):
     def forward(self, x, video=None, text_emb=None):
         # x    : [B, C, T]
         # video: [B, T_v, C_v, H_v, W_v] or None
-        # text_emb: [B, T_txt, d_text] or None
+        # text_emb: [B, T_txt, d_txt] or None
         with torch.no_grad():
             ts = self.sample_timesteps(x.shape[0], x.device, x.dtype)
             eps = torch.randn_like(x) * self.noise_scale
@@ -162,20 +153,20 @@ class AudioDiffusionModel(nn.Module):
         # Project video once
         video_tokens = None
         if video is not None and self.core.video_proj is not None:
-            video_tokens = self.core.project_video(video)    # [B, T_v, d_model]
+            video_tokens = self.core.project_video(video)    # [B, N_v, d_model]
       
         # Optionally swap for null tokens (CFG dropout)
         if self.training:
             if video_tokens is not None:
-                B, T_v = video_tokens.shape[:2]
+                B = video_tokens.shape[0]
                 video_drop = torch.rand(B, 1, 1, device=video_tokens.device) < self.cfg_prob
-                null_video = self.core.null_video[None, None, :].expand(B, T_v, -1)
+                null_video = self.core.add_spatial_emb(self.core.null_video[None, :, :].expand(B, -1, -1))
                 video_tokens = torch.where(video_drop, null_video, video_tokens)
 
             if text_tokens is not None:
                 B, T_txt = text_tokens.shape[:2]
-                text_drop = torch.rand(B, 1, 1, device=video_tokens.device) < self.cfg_prob
-                null_text = self.core.null_text[None, None, :].expand(B, T_txt, -1) 
+                text_drop = torch.rand(B, 1, 1, device=text_tokens.device) < self.cfg_prob
+                null_text = self.core.null_text[None, None, :].expand(B, T_txt, -1)
                 text_tokens = torch.where(text_drop, null_text, text_tokens)
 
         pred = self.core(z, ts, video_tokens, text_tokens)

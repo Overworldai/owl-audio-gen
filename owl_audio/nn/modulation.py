@@ -13,6 +13,9 @@ class AdaLN(nn.Module):
         self.fc = nn.Linear(config.d_model, 2 * config.d_model)
         self.norm = LayerNorm(config.d_model)
 
+        nn.init.zeros_(self.fc.weight)
+        nn.init.zeros_(self.fc.bias)
+
     def forward(self, x, cond):
         # x : [b,n,d]
         # cond : [b,d]
@@ -27,7 +30,10 @@ class Gate(nn.Module):
         super().__init__()
 
         self.fc = nn.Linear(config.d_model, config.d_model)
-    
+        
+        nn.init.zeros_(self.fc.weight)
+        nn.init.zeros_(self.fc.bias)
+
     def forward(self, x, cond):
         cond = F.silu(cond)
         gate = self.fc(cond)

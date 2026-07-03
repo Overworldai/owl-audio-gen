@@ -257,7 +257,7 @@ def convert_latent_dtype(latent, save_dtype="bf16"):
     
     if save_dtype == 'int8':
         latent = latent.float()
-        scale = torch.abs().amax().clamp(min=1e-8)
+        scale = torch.abs(latent).amax().clamp(min=1e-8)
         latent_q = (latent * (127.0 / scale)).round().clamp(-127, 127).to(dtype)
         return latent_q, scale.cpu()
     else:

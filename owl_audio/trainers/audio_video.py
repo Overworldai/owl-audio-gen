@@ -31,7 +31,6 @@ def _video_self_pad(fn, p=1, q=4):
         return fn(x)[:, q:]
     return wrapper
 
-
 class AudioVideoTrainer(BaseTrainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -142,6 +141,17 @@ class AudioVideoTrainer(BaseTrainer):
             self.scheduler.load_state_dict(save_dict["scheduler"])
         self.total_step_counter = save_dict["total_step_counter"]
 
+    def load_pretrained_model(self):
+        pretrain_ckpt = getattr(self.train_cfg, "pretrain_ckpt", None)
+        if pretrain_ckpt is None:
+            return
+        # load from resume_ckpt instead of pretrain_ckpt
+        if self.train_cfg.resume_ckpt is not None:  
+            return
+        save_dict = super().load(pretrain_ckpt)
+        self.model.load_state_dict(save_dict['model'], strict=False)
+        self.ema.load_state_dict(save_dict["ema"], strict=False)
+
     def train(self):
         torch.cuda.set_device(self.local_rank)
 
@@ -181,6 +191,7 @@ class AudioVideoTrainer(BaseTrainer):
         ctx = torch.amp.autocast(f"cuda:{self.local_rank}", torch.bfloat16)
 
         self.load()
+        self.load_pretrained_model()
 
         timer = Timer()
         timer.reset()
@@ -223,7 +234,9 @@ class AudioVideoTrainer(BaseTrainer):
                 audio_latents = self.encode(raw_audio)   # [B, C, latent_t]
 
                 with ctx:
-                    loss = self.model(audio_latents, video=video_latents) / accum_steps
+                    loss = self.model(audio_latents, video=video_latents)
+                    loss = loss / accum_steps
+                    
                 metrics.log("loss", loss)
 
                 self.scaler.scale(loss).backward()
@@ -295,10 +308,15 @@ class AudioVideoTrainer(BaseTrainer):
                             else:
                                 wandb_dict["samples"] = audio_to_wandb(decoded_audio, self.raw_audio_sr)
 
-                            # compute eval loss
+                            # compute eval loss 
                             with torch.no_grad():
+                                eval_model = self.get_module(ema=True)
+                                eval_model.eval()
                                 with ctx:
-                                    eval_loss = self.model(cond_latents, video=cond_video_lat)
+                                    eval_loss = eval_model(cond_latents, video=cond_video_lat)
+                                eval_model.core.dit.set_store_attn(False)
+                                eval_model.train()
+
                             wandb_dict["eval_loss"] = eval_loss
 
                         if self.rank == 0:

@@ -20,15 +20,16 @@ def audio_video_sample(model, shape, video, text_emb, steps, device, dtype,
     # Project video once — reused every step
     video_tokens = None
     null_video = None
-    if video is not None and model.project_video is not None:
-        video_tokens = model.project_video(video.to(device=device, dtype=dtype))  # [B, T_v, d_model]
-        null_video = model.null_video[None, None, :].expand_as(video_tokens)
+    if video is not None and model.video_proj is not None:
+        B = video.shape[0]
+        video_tokens = model.project_video(video.to(device=device, dtype=dtype))  # [B, N_v, d_model]
+        null_video = model.add_spatial_emb(model.null_video[None, :, :].expand(B, -1, -1))
 
     text_tokens = None
     null_text = None
     if text_emb is not None and model.text_proj is not None:
         text_tokens = model.text_proj(text_emb.to(device=device, dtype=dtype))  # [B, seq, d_model]
-        null_text = model.null_video[None, None, :].expand_as(text_tokens)
+        null_text = model.null_text[None, None, :].expand_as(text_tokens)
 
     use_cfg = cfg_scale != 1.0
 

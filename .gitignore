@@ -37,3 +37,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Cache
+.cache/
+

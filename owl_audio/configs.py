@@ -14,7 +14,6 @@ class ModelConfig:
     n_heads: int
     d_model: int
     d_text: int
-    video_patch_content: int
 
     sample_rate: float
     
@@ -26,9 +25,9 @@ class ModelConfig:
     kernel_size: Optional[Tuple[int, int]] = None
     mlp_ratio: int = 4
 
-    video_patch_size_spatial: Tuple[int, int] = (1, 1)  # (p_h, p_w) for spatial patching
+    video_latent_hw: Optional[Tuple[int, int]] = None
+    video_patch_spatial: Tuple[int, int] = (1, 1) 
     video_channels: int = 32
-    video_latent_hw: Tuple[int, int] = (20, 40)          # latent spatial dims (H, W)
     window_length: float = 10.0
     video_sr: float = 7.5
 
@@ -51,6 +50,7 @@ class TrainingConfig:
 
     checkpoint_dir : str = "checkpoints/v0" # Where checkpoints saved
     resume_ckpt : str = None
+    pretrain_ckpt : str = None
 
     # Distillation related
     teacher_ckpt : str = None
